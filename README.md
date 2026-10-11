@@ -28,7 +28,7 @@ A comprehensive, native Omarchy status bar panel and widget for tracking AI codi
 
 ---
 
-## Installation
+## Installation and Removal
 
 Install directly into Omarchy using the `omarchy plugin` CLI:
 
@@ -41,6 +41,25 @@ To update to the latest version:
 ```bash
 omarchy plugin update jfarr.agents
 ```
+
+To remove the plugin:
+
+```bash
+omarchy plugin remove jfarr.agents
+```
+
+---
+
+## Dependencies
+
+- **Omarchy Desktop / Omarchy Shell**: Required plugin host runtime and top bar container.
+- **Python 3**: Uses only the Python standard library for the bundled metrics collector.
+- **Optional Provider CLI Tools**: The plugin monitors local session logs and auth states for the tools you have installed:
+  - Antigravity (`agy` / Vertex AI ADC credentials)
+  - Claude Code (`claude` / Anthropic OAuth)
+  - OpenAI Codex (`codex` / ChatGPT session state)
+  - GitHub Copilot (`copilot` / GitHub CLI session state)
+  - Grok CLI (`grok` / xAI CLI auth state)
 
 ---
 
