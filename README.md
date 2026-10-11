@@ -33,7 +33,7 @@ A comprehensive, native Omarchy status bar panel and widget for tracking AI codi
 Install directly into Omarchy using the `omarchy plugin` CLI:
 
 ```bash
-omarchy plugin add https://github.com/<username>/omarchy-ai-agents.git --enable
+omarchy plugin add https://github.com/nertwork/omarchy-ai-agents.git --enable
 ```
 
 To update to the latest version:
