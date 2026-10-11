@@ -229,6 +229,8 @@ Panel {
       ? String(day.date)
       : dayName(day.date) + " " + (parsed.getMonth() + 1) + "/" + parsed.getDate()
     var text = label + " · " + usage.formatTokenCount(Number(day.messageCount || 0)) + " tokens"
+    if (Number(day.costUsd || 0) > 0)
+      text += " · $" + Number(day.costUsd).toFixed(2)
     // Prompt and session counts only exist for today, so they ride along here
     // instead of taking a section of their own. Billing-API agents never
     // count prompts, and "0 prompts" would read as a quiet day, not a gap.
@@ -254,13 +256,15 @@ Panel {
       var output = Number(bucket.outputTokens || 0)
       var cacheRead = Number(bucket.cacheReadInputTokens || 0)
       var cacheWrite = Number(bucket.cacheCreationInputTokens || 0)
+      var cost = Number(bucket.costUsd || 0)
       rows.push({
         name: usage.friendlyModelName(id),
         total: input + output + cacheRead + cacheWrite,
         input: input,
         output: output,
         cacheRead: cacheRead,
-        cacheWrite: cacheWrite
+        cacheWrite: cacheWrite,
+        costUsd: cost
       })
     }
     rows.sort(function(a, b) { return b.total - a.total })
@@ -269,10 +273,13 @@ Panel {
 
   function modelTooltip(row) {
     if (!row) return ""
-    return "In " + usage.formatTokenCount(row.input)
+    var text = "In " + usage.formatTokenCount(row.input)
       + " · out " + usage.formatTokenCount(row.output)
       + " · cache read " + usage.formatTokenCount(row.cacheRead)
       + " · cache write " + usage.formatTokenCount(row.cacheWrite)
+    if (Number(row.costUsd || 0) > 0)
+      text += " · $" + Number(row.costUsd).toFixed(2)
+    return text
   }
 
   // Only speaks up when the numbers cover more than this machine.
@@ -935,7 +942,13 @@ Panel {
     Text {
       id: modelTokens
       textFormat: Text.PlainText
-      text: modelRow.row ? usage.formatTokenCount(modelRow.row.total) : ""
+      text: {
+        if (!modelRow.row) return ""
+        var tokens = usage.formatTokenCount(modelRow.row.total)
+        if (Number(modelRow.row.costUsd || 0) > 0)
+          return "$" + Number(modelRow.row.costUsd).toFixed(2) + " · " + tokens
+        return tokens
+      }
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall

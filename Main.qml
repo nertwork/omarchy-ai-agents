@@ -220,7 +220,8 @@ Item {
   function providerHasData(p) {
     return numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
       || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
-      || numberValue(p.todaySessions) > 0 || (p.limits && p.limits.length > 0)
+      || numberValue(p.todaySessions) > 0 || floatValue(p.costUsd) > 0
+      || (p.limits && p.limits.length > 0)
       || !!p.balance || p.ready === true
   }
 
@@ -258,11 +259,15 @@ Item {
       tierLabel: String(record.tierLabel || ""),
       balance: balanceValue(record.balance),
 
+      costUsd: synced ? floatValue(stats.costUsd) : floatValue(record.costUsd),
+      todayCostUsd: synced ? floatValue(stats.todayCostUsd) : floatValue(record.todayCostUsd),
+
       todayPrompts: synced ? numberValue(stats.todayPrompts) : numberValue(record.todayPrompts),
       todaySessions: synced ? numberValue(stats.todaySessions) : numberValue(record.todaySessions),
       todayTotalTokens: synced ? numberValue(stats.todayTotalTokens) : numberValue(record.todayTotalTokens),
       todayTokensByModel: synced ? (stats.todayTokensByModel || ({})) : (record.todayTokensByModel || ({})),
       recentDays: synced ? (stats.recentDays || []) : (record.recentDays || []),
+      recentConversations: Array.isArray(record.recentConversations) ? record.recentConversations : [],
       totalPrompts: synced ? numberValue(stats.totalPrompts) : numberValue(record.totalPrompts),
       totalSessions: synced ? numberValue(stats.totalSessions) : numberValue(record.totalSessions),
       activeDays: synced ? numberValue(stats.activeDays) : numberValue(record.activeDays),
@@ -514,6 +519,11 @@ Item {
     return isFinite(n) ? Math.round(n) : 0
   }
 
+  function floatValue(value) {
+    var n = Number(value || 0)
+    return isFinite(n) ? Number(n.toFixed(2)) : 0
+  }
+
   function dateString(date) {
     var y = date.getFullYear()
     var m = String(date.getMonth() + 1).padStart(2, "0")
@@ -532,7 +542,7 @@ Item {
   }
 
   function emptyTokenBucket() {
-    return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }
+    return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0.0 }
   }
 
   // Device-scoped stats add up across machines; account-scoped stats
@@ -543,9 +553,22 @@ Item {
     return additive ? numberValue(current) + numberValue(value) : Math.max(numberValue(current), numberValue(value))
   }
 
+  function combineFloat(additive, current, value) {
+    var c = Number(current || 0)
+    var v = Number(value || 0)
+    var result = additive ? c + v : Math.max(c, v)
+    return isFinite(result) ? Number(result.toFixed(2)) : 0
+  }
+
   function combineObjectNumbers(additive, target, source) {
     if (!source) return
-    for (var key in source) target[key] = combineNumber(additive, target[key], source[key])
+    for (var key in source) {
+      if (key === "costUsd" || key === "todayCostUsd") {
+        target[key] = combineFloat(additive, target[key], source[key])
+      } else {
+        target[key] = combineNumber(additive, target[key], source[key])
+      }
+    }
   }
 
   function aggregateSnapshots(snapshots) {
@@ -556,18 +579,25 @@ Item {
     function providerAcc(id) {
       if (providers[id]) return providers[id]
       var recentByDay = {}
-      for (var d = 0; d < dates.length; d++) recentByDay[dates[d]] = 0
+      var recentCostByDay = {}
+      for (var d = 0; d < dates.length; d++) {
+        recentByDay[dates[d]] = 0
+        recentCostByDay[dates[d]] = 0.0
+      }
       providers[id] = {
         providerId: id,
         providerName: "",
         ready: false,
         hasLocalStats: false,
         hasPromptStats: false,
+        costUsd: 0.0,
+        todayCostUsd: 0.0,
         todayPrompts: 0,
         todaySessions: 0,
         todayTotalTokens: 0,
         todayTokensByModel: ({}),
         recentByDay: recentByDay,
+        recentCostByDay: recentCostByDay,
         totalPrompts: 0,
         totalSessions: 0,
         activeDays: 0,
@@ -594,6 +624,8 @@ Item {
         // count prompts, so a missing value reads as true.
         acc.hasPromptStats = acc.hasPromptStats || stats.hasPromptStats !== false
         var additive = String(stats.scope || "device") !== "account"
+        acc.costUsd = combineFloat(additive, acc.costUsd, stats.costUsd)
+        acc.todayCostUsd = combineFloat(additive, acc.todayCostUsd, stats.todayCostUsd)
         acc.todayPrompts = combineNumber(additive, acc.todayPrompts, stats.todayPrompts)
         acc.todaySessions = combineNumber(additive, acc.todaySessions, stats.todaySessions)
         acc.todayTotalTokens = combineNumber(additive, acc.todayTotalTokens, stats.todayTotalTokens)
@@ -613,6 +645,8 @@ Item {
           var date = String(day.date || "")
           if (acc.recentByDay[date] !== undefined)
             acc.recentByDay[date] = combineNumber(additive, acc.recentByDay[date], day.messageCount)
+          if (acc.recentCostByDay[date] !== undefined)
+            acc.recentCostByDay[date] = combineFloat(additive, acc.recentCostByDay[date], day.costUsd)
         }
 
         var usage = stats.modelUsage || {}
@@ -628,7 +662,14 @@ Item {
     for (var id in providers) {
       var acc = providers[id]
       var recentDays = []
-      for (var di = 0; di < dates.length; di++) recentDays.push({ date: dates[di], messageCount: acc.recentByDay[dates[di]] || 0 })
+      for (var di = 0; di < dates.length; di++) {
+        var dStr = dates[di]
+        recentDays.push({
+          date: dStr,
+          messageCount: acc.recentByDay[dStr] || 0,
+          costUsd: acc.recentCostByDay[dStr] || 0.0
+        })
+      }
       var providerDevices = Object.keys(acc.devices).sort()
       outProviders[id] = {
         providerId: acc.providerId,
@@ -636,6 +677,8 @@ Item {
         ready: acc.ready || providerDevices.length > 0,
         hasLocalStats: acc.hasLocalStats,
         hasPromptStats: acc.hasPromptStats,
+        costUsd: acc.costUsd,
+        todayCostUsd: acc.todayCostUsd,
         todayPrompts: acc.todayPrompts,
         todaySessions: acc.todaySessions,
         todayTotalTokens: acc.todayTotalTokens,
@@ -670,6 +713,8 @@ Item {
       hasLocalStats: record.hasLocalStats !== false,
       hasPromptStats: record.hasPromptStats !== false,
       scope: String(record.scope || "device"),
+      costUsd: floatValue(record.costUsd),
+      todayCostUsd: floatValue(record.todayCostUsd),
       todayPrompts: numberValue(record.todayPrompts),
       todaySessions: numberValue(record.todaySessions),
       todayTotalTokens: numberValue(record.todayTotalTokens),
