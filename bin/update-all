@@ -1,0 +1,14 @@
+#!/bin/bash
+# Self-contained Agent Usage Update runner for Omarchy Agents plugin.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run upstream collector if available (handles Claude Code, Fireworks, etc.)
+# We pass --except codex because upstream omarchy-agent-usage-codex has an I/O buffering deadlock.
+if command -v omarchy-agent-usage-update >/dev/null 2>&1; then
+  omarchy-agent-usage-update --except codex "$@" 2>/dev/null || true
+fi
+
+# Run our bundled robust collector for Codex, AGY, Grok, and Copilot
+python3 "$SCRIPT_DIR/collector.py" "$@"
