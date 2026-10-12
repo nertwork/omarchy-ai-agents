@@ -43,13 +43,13 @@ omarchy plugin add https://github.com/nertwork/omarchy-ai-agents.git --enable
 To update to the latest version:
 
 ```bash
-omarchy plugin update jfarr.agents
+omarchy plugin update nertwork.agents
 ```
 
 To remove the plugin:
 
 ```bash
-omarchy plugin remove jfarr.agents
+omarchy plugin remove nertwork.agents
 ```
 
 ---
@@ -98,7 +98,7 @@ You can configure AI Agents via OmaSettings or directly in `~/.config/omarchy/sh
 
 ```json
 {
-  "id": "jfarr.agents",
+  "id": "nertwork.agents",
   "refreshIntervalSec": 900,
   "providers": {
     "agy": { "enabled": true },
