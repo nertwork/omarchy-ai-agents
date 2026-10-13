@@ -3,7 +3,7 @@
   "id": "nertwork.agents",
   "name": "AI Agents",
   "version": "1.0.0",
-  "author": "jfarr",
+  "author": "nertwork",
   "license": "MIT",
   "description": "Antigravity (AGY), Claude Code, OpenAI Codex, GitHub Copilot, and Grok CLI usage, limits, and analytics in a native Omarchy bar panel.",
   "kinds": [
@@ -97,5 +97,6 @@
   },
   "omarchy": {
     "clonedFrom": "omarchy.agents"
-  }
+  },
+  "repository": "https://github.com/nertwork/omarchy-ai-agents"
 }

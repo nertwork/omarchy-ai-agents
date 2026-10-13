@@ -407,7 +407,7 @@ Item {
 
     syncRequestedWhileRunning = false
     syncStatusText = ""
-    syncMkdirProcess.command = ["mkdir", "-p", root.syncEffectiveDir]
+    syncMkdirProcess.command = ["mkdir", "-m", "700", "-p", root.syncEffectiveDir]
     syncMkdirProcess.running = true
   }
 

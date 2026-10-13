@@ -30,8 +30,14 @@ import time
 
 def get_usage_dir() -> Path:
     state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
-    usage_dir = state_home / "omarchy" / "agents" / "usage"
-    usage_dir.mkdir(parents=True, exist_ok=True)
+    agents_state_dir = state_home / "omarchy" / "agents"
+    usage_dir = agents_state_dir / "usage"
+    usage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        agents_state_dir.chmod(0o700)
+        usage_dir.chmod(0o700)
+    except OSError:
+        pass
     return usage_dir
 
 
@@ -53,7 +59,7 @@ def write_state_file(agent_id: str, record: dict) -> Path:
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle, indent=2)
             handle.write("\n")
-        tmp.chmod(0o644)
+        tmp.chmod(0o600)
         tmp.replace(target)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -602,7 +608,6 @@ def collect_grok():
 
     grok_session_dirs = [
         Path.home() / ".grok" / "sessions",
-        Path.home() / "migration-staging" / ".grok" / "sessions",
     ]
 
     total_prompts = 0
@@ -720,7 +725,6 @@ def collect_copilot():
 
     copilot_dirs = [
         Path.home() / ".copilot" / "session-state",
-        Path.home() / "migration-staging" / ".copilot" / "session-state",
     ]
 
     total_prompts = 0
