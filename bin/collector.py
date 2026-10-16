@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Unified Agent Usage Collector for Omarchy.
+"""Unified Modular Agent Usage Collector for Omarchy (nertwork.agents).
 
-Collects usage statistics, subscriptions, and rate limits for:
-- Antigravity (AGY) - Vertex AI token usage, prompt counts, and model stats
-- OpenAI Codex - Non-blocking RPC rate limits (5h & 7d windows) and session stats
-- Grok CLI - Session token counts, prompts, and active model stats
-- GitHub Copilot - CLI session token counts and active model stats
-
-Writes display-ready records to ~/.local/state/omarchy/agents/usage/
-for the Omarchy Agents panel.
+Supports two operating modes out of the box (strictly on localhost):
+1. Out-of-the-Box Public Default (`splitProfiles: false`):
+   - Emits `agy.json` (aggregating all local Antigravity profiles) and
+     `claude.json` (aggregating all local Claude Code profiles).
+2. Modular Multi-Profile Mode (`splitProfiles: true`, enabled via
+   `~/.local/state/omarchy/settings/nertwork.agents.json` or
+   `~/.config/omarchy/agents/profiles.json`):
+   - Emits separate non-overlapping provider files:
+     * `agy.json` (primary AGY profile)
+     * `agy-sandbox.json` (secondary/sandbox AGY profile)
+     * `fiserv-claude.json` (secondary/work Claude profile)
+     * `claude.json` (primary/personal Claude profile)
+   - Also emits `_summary.json` with family-level (`agy`, `claude`) and
+     cross-provider (`grandTotal`) rollups, and embeds `aggregation` and
+     `groupTotals` metadata into each provider JSON file.
 """
 
 from __future__ import annotations
@@ -21,7 +28,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -39,6 +45,17 @@ def get_usage_dir() -> Path:
     except OSError:
         pass
     return usage_dir
+
+
+def get_legacy_usage_dir() -> Path:
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    legacy_dir = state_home / "omarchy" / "agent-usage"
+    legacy_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        legacy_dir.chmod(0o700)
+    except OSError:
+        pass
+    return legacy_dir
 
 
 def local_date_str(d: dt.date) -> str:
@@ -64,415 +81,219 @@ def write_state_file(agent_id: str, record: dict) -> Path:
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+
+    # Mirror to legacy `~/.local/state/omarchy/agent-usage/` directory
+    try:
+        legacy_dir = get_legacy_usage_dir()
+        shutil.copy2(target, legacy_dir / target.name)
+    except Exception:
+        pass
+
     return target
 
 
-# =============================================================================
-# Antigravity (AGY)
-# =============================================================================
-
-# Vertex AI / AI Studio Pricing for Gemini models (per 1M tokens)
-# Promotional Pricing (effective through Dec 31, 2026):
-AGY_PRICING = {
-    "Gemini 3.8 Flash (High)": {
-        "input": 0.75,
-        "cache": 0.075,
-        "output": 3.75,
-    },
-    "gemini-3.8-flash": {
-        "input": 0.75,
-        "cache": 0.075,
-        "output": 3.75,
-    },
-    "Gemini 3.5 Flash Lite": {
-        "input": 0.30,
-        "cache": 0.03,
-        "output": 2.50,
-    },
-    "gemini-3.5-flash-lite": {
-        "input": 0.30,
-        "cache": 0.03,
-        "output": 2.50,
-    },
-    "Gemini 2.5 Pro": {
-        "input": 1.25,
-        "cache": 0.3125,
-        "output": 10.00,
-    },
-    "gemini-2.5-pro": {
-        "input": 1.25,
-        "cache": 0.3125,
-        "output": 10.00,
-    },
-}
-AGY_DEFAULT_MODEL = "Gemini 3.8 Flash (High)"
+def remove_state_file(agent_id: str) -> None:
+    for d in (get_usage_dir(), get_legacy_usage_dir()):
+        p = d / f"{agent_id}.json"
+        p.unlink(missing_ok=True)
 
 
-def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
-    res = 0
-    shift = 0
-    while True:
-        b = data[offset]
-        offset += 1
-        res |= (b & 0x7F) << shift
-        if not (b & 0x80):
-            break
-        shift += 7
-    return res, offset
-
-
-def _parse_proto(data: bytes) -> dict[int, list]:
-    fields: dict[int, list] = {}
-    offset = 0
-    length = len(data)
-    while offset < length:
+def load_settings() -> dict:
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    settings_path = state_home / "omarchy" / "settings" / "nertwork.agents.json"
+    if settings_path.exists():
         try:
-            tag_wire, offset = _read_varint(data, offset)
-        except Exception:
-            break
-        tag = tag_wire >> 3
-        wire = tag_wire & 7
-        if wire == 0:
-            val, offset = _read_varint(data, offset)
-        elif wire == 1:
-            val = data[offset : offset + 8]
-            offset += 8
-        elif wire == 2:
-            l, offset = _read_varint(data, offset)
-            val = data[offset : offset + l]
-            offset += l
-        elif wire == 5:
-            val = data[offset : offset + 4]
-            offset += 4
-        else:
-            break
-        fields.setdefault(tag, []).append(val)
-    return fields
-
-
-def get_conversation_model(db_path: Path) -> str:
-    if not db_path.is_file():
-        return AGY_DEFAULT_MODEL
-    try:
-        conn = sqlite3.connect(str(db_path))
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gen_metadata'")
-        if not cur.fetchone():
-            return AGY_DEFAULT_MODEL
-        cur.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL LIMIT 10")
-        for (data,) in cur.fetchall():
-            if not isinstance(data, (bytes, bytearray)):
-                continue
-            outer = _parse_proto(data)
-            for sub1 in outer.get(1, []):
-                inner = _parse_proto(sub1)
-                if 19 in inner:
-                    raw_name = inner[19][0].decode(errors="ignore").strip()
-                    if "3.8-flash" in raw_name or "3.8" in raw_name:
-                        return "Gemini 3.8 Flash (High)"
-                    elif "3.5-flash-lite" in raw_name:
-                        return "Gemini 3.5 Flash Lite"
-                    elif "2.5-pro" in raw_name:
-                        return "Gemini 2.5 Pro"
-                    elif raw_name:
-                        return raw_name
-    except Exception:
-        pass
-    return AGY_DEFAULT_MODEL
-
-
-def collect_agy():
-    today = dt.datetime.now().date()
-    today_str = local_date_str(today)
-    recent_dates = recent_date_strings()
-    recent = {day: {"date": day, "messageCount": 0, "costUsd": 0.0} for day in recent_dates}
-
-    gemini_cli_home = Path(os.environ.get("GEMINI_CLI_HOME") or (Path.home() / ".gemini" / "antigravity-cli"))
-    brain_dir = gemini_cli_home / "brain"
-    conv_db_dir = gemini_cli_home / "conversations"
-    sum_db = gemini_cli_home / "conversation_summaries.db"
-
-    # Map subagents to their root parent conversations and extract titles
-    titles: dict[str, str] = {}
-    parent_map: dict[str, str] = {}
-    if sum_db.is_file():
-        try:
-            conn = sqlite3.connect(str(sum_db))
-            cur = conn.cursor()
-            cur.execute("SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries")
-            for cid, t, p in cur.fetchall():
-                if t:
-                    titles[cid] = t
-                if p:
-                    parent_map[cid] = p
-            conn.close()
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
-
-    def get_root_id(cid: str) -> str:
-        curr = cid
-        visited = set()
-        while curr in parent_map and curr not in visited:
-            visited.add(curr)
-            curr = parent_map[curr]
-        return curr
-
-    today_prompts = 0
-    today_root_sessions: set[str] = set()
-    today_total_tokens = 0
-    today_total_cost = 0.0
-    today_tokens_by_model: dict[str, int] = {}
-    model_usage: dict[str, dict[str, int | float]] = {}
-    active_days: set[str] = set()
-    total_prompts = 0
-    root_sessions: set[str] = set()
-    total_cost = 0.0
-
-    # Per-root conversation statistics (child subagents are rolled up into parent)
-    conv_stats: dict[str, dict] = {}
-
-    if brain_dir.is_dir():
-        transcript_files = list(brain_dir.glob("*/.system_generated/logs/transcript.jsonl"))
-        for tpath in transcript_files:
-            try:
-                cid = tpath.parent.parent.parent.name
-                root_id = get_root_id(cid)
-
-                mtime = tpath.stat().st_mtime
-                session_dt = dt.datetime.fromtimestamp(mtime)
-                session_date_str = local_date_str(session_dt.date())
-
-                db_path = conv_db_dir / f"{cid}.db"
-                session_model = get_conversation_model(db_path)
-
-                if root_id not in conv_stats:
-                    conv_stats[root_id] = {
-                        "tokens": 0,
-                        "inp": 0,
-                        "cache": 0,
-                        "out": 0,
-                        "cost": 0.0,
-                        "prompts": 0,
-                        "mtime": mtime,
-                        "model": session_model,
-                    }
-                else:
-                    conv_stats[root_id]["mtime"] = max(conv_stats[root_id]["mtime"], mtime)
-
-                with tpath.open("r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        try:
-                            obj = json.loads(line)
-                            step_type = obj.get("type", "")
-                            source = obj.get("source", "")
-                            created = obj.get("created_at")
-
-                            entry_date_str = session_date_str
-                            if created:
-                                try:
-                                    entry_date_str = local_date_str(
-                                        dt.datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone().date()
-                                    )
-                                except Exception:
-                                    pass
-
-                            # Only count explicit user prompts in root sessions
-                            if step_type == "USER_INPUT" and source == "USER_EXPLICIT":
-                                total_prompts += 1
-                                root_sessions.add(root_id)
-                                conv_stats[root_id]["prompts"] += 1
-                                active_days.add(entry_date_str)
-                                if entry_date_str == today_str:
-                                    today_prompts += 1
-                                    today_root_sessions.add(root_id)
-
-                            if step_type == "PLANNER_RESPONSE":
-                                if obj.get("input_tokens") is not None:
-                                    inp = int(obj.get("input_tokens") or 0)
-                                    cache_read = int(obj.get("cache_read_tokens") or 0)
-                                    out = int(obj.get("output_tokens") or 0)
-                                else:
-                                    content = obj.get("content", "") or ""
-                                    thinking = obj.get("thinking", "") or ""
-                                    tc = obj.get("tool_calls") or []
-                                    tc_len = len(json.dumps(tc)) if tc else 0
-                                    total_chars = len(content) + len(thinking) + tc_len
-                                    inp = 0
-                                    cache_read = 0
-                                    out = max(1, round(total_chars / 3.85)) if total_chars > 0 else 0
-
-                                rates = AGY_PRICING.get(session_model, AGY_PRICING[AGY_DEFAULT_MODEL])
-                                turn_cost = (
-                                    inp * rates["input"]
-                                    + cache_read * rates["cache"]
-                                    + out * rates["output"]
-                                ) / 1_000_000.0
-                                turn_total = inp + cache_read + out
-
-                                b = model_usage.setdefault(session_model, {
-                                    "inputTokens": 0,
-                                    "outputTokens": 0,
-                                    "cacheReadInputTokens": 0,
-                                    "cacheCreationInputTokens": 0,
-                                    "costUsd": 0.0,
-                                })
-                                b["inputTokens"] += inp
-                                b["outputTokens"] += out
-                                b["cacheReadInputTokens"] += cache_read
-                                b["costUsd"] += turn_cost
-
-                                total_cost += turn_cost
-
-                                if entry_date_str in recent:
-                                    recent[entry_date_str]["messageCount"] += turn_total
-                                    recent[entry_date_str]["costUsd"] += turn_cost
-
-                                if entry_date_str == today_str:
-                                    today_total_tokens += turn_total
-                                    today_total_cost += turn_cost
-                                    today_tokens_by_model[session_model] = (
-                                        today_tokens_by_model.get(session_model, 0) + turn_total
-                                    )
-
-                                active_days.add(entry_date_str)
-
-                                cs = conv_stats[root_id]
-                                cs["tokens"] += turn_total
-                                cs["inp"] += inp
-                                cs["cache"] += cache_read
-                                cs["out"] += out
-                                cs["cost"] += turn_cost
-                        except Exception:
-                            continue
-            except Exception:
-                continue
-
-    recent_conversations = []
-    for rid, cs in sorted(conv_stats.items(), key=lambda item: item[1]["mtime"], reverse=True):
-        if cs["prompts"] == 0 and cs["tokens"] == 0:
-            continue
-        title = titles.get(rid) or f"Session {rid[:8]}"
-        recent_conversations.append({
-            "id": rid,
-            "title": title,
-            "model": cs["model"],
-            "tokens": cs["tokens"],
-            "inputTokens": cs["inp"],
-            "cacheReadTokens": cs["cache"],
-            "outputTokens": cs["out"],
-            "costUsd": round(cs["cost"], 2),
-            "prompts": cs["prompts"],
-            "updatedAt": dt.datetime.fromtimestamp(cs["mtime"]).isoformat(),
-        })
-
-    agy_bin = shutil.which("agy") or str(Path.home() / ".local" / "bin" / "agy")
-    is_ready = os.path.exists(agy_bin) or (brain_dir.is_dir() and len(root_sessions) > 0)
-
-    # Determine active model
-    if today_tokens_by_model:
-        active_model = max(today_tokens_by_model.keys(), key=lambda m: today_tokens_by_model[m])
-    elif model_usage:
-        active_model = max(
-            model_usage.keys(),
-            key=lambda m: model_usage[m]["inputTokens"]
-            + model_usage[m]["cacheReadInputTokens"]
-            + model_usage[m]["outputTokens"],
-        )
-    else:
-        active_model = AGY_DEFAULT_MODEL
-
-    serialized_model_usage = {}
-    for m, data in model_usage.items():
-        serialized_model_usage[m] = {
-            "inputTokens": int(data["inputTokens"]),
-            "outputTokens": int(data["outputTokens"]),
-            "cacheReadInputTokens": int(data["cacheReadInputTokens"]),
-            "cacheCreationInputTokens": int(data["cacheCreationInputTokens"]),
-            "costUsd": round(float(data["costUsd"]), 2),
-        }
-
-    serialized_recent_days = [
-        {
-            "date": d,
-            "messageCount": int(recent[d]["messageCount"]),
-            "costUsd": round(float(recent[d]["costUsd"]), 2),
-        }
-        for d in recent_dates
-    ]
-
-    tier_label = f"Vertex AI · ${total_cost:.2f}"
-    if today_total_cost > 0:
-        tier_label += f" (${today_total_cost:.2f} today)"
-
-    record = {
-        "schemaVersion": 1,
-        "id": "agy",
-        "name": "Antigravity",
-        "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "ready": is_ready,
-        "hasLocalStats": len(root_sessions) > 0,
-        "hasPromptStats": True,
-        "tierLabel": tier_label,
-        "usageStatusText": "",
-        "authHelpText": "Antigravity uses Vertex AI ADC auth.",
-        "activeModel": active_model,
-        "limits": [],
-        "costUsd": round(total_cost, 2),
-        "todayCostUsd": round(today_total_cost, 2),
-        "todayPrompts": today_prompts,
-        "todaySessions": len(today_root_sessions),
-        "todayTotalTokens": today_total_tokens,
-        "todayTokensByModel": dict(today_tokens_by_model),
-        "recentDays": serialized_recent_days,
-        "totalPrompts": total_prompts,
-        "totalSessions": len(root_sessions),
-        "activeDays": len(active_days),
-        "activeDates": sorted(active_days),
-        "modelUsage": serialized_model_usage,
-        "recentConversations": recent_conversations[:8],
-    }
-    write_state_file("agy", record)
+    return {}
 
 
-# =============================================================================
-# OpenAI Codex (Robust Non-blocking RPC)
-# =============================================================================
+def is_provider_enabled(provider_id: str, default: bool = False) -> bool:
+    settings = load_settings()
+    providers = settings.get("providers")
+    if isinstance(providers, dict):
+        p = providers.get(provider_id)
+        if isinstance(p, dict) and "enabled" in p:
+            return bool(p["enabled"])
+    enabled_list = settings.get("enabledProviders")
+    if isinstance(enabled_list, list):
+        return provider_id in enabled_list
+    return default
+
 
 def limit_window_entry(window: dict | None) -> dict | None:
     if not isinstance(window, dict):
         return None
-    used = window.get("usedPercent")
-    if used is None:
+    label = window.get("label") or window.get("name") or window.get("window") or "Limit"
+    pct = window.get("percent")
+    if pct is None:
+        used = window.get("used")
+        limit = window.get("limit") or window.get("max")
+        if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
+            pct = float(used) / float(limit)
+    if pct is None:
         return None
-    try:
-        mins = int(window.get("windowDurationMins") or 0)
-    except Exception:
-        mins = 0
-    if mins == 10080:
-        label = "Weekly (7-day)"
-    elif mins and mins % 60 == 0:
-        label = f"{mins // 60}h window"
-    elif mins:
-        label = f"{mins}m window"
-    else:
-        label = "Limit"
-    reset = window.get("resetsAt")
-    reset_iso = ""
-    if reset:
-        try:
-            reset_iso = dt.datetime.fromtimestamp(int(reset), dt.timezone.utc).isoformat()
-        except Exception:
-            pass
+    resets_at = window.get("resetsAt") or window.get("resetAt") or ""
     return {
-        "label": label,
-        "percent": float(used) / 100.0,
-        "resetsAt": reset_iso,
+        "label": str(label),
+        "percent": round(max(0.0, min(1.0, float(pct))), 4),
+        "resetsAt": str(resets_at),
     }
 
 
-def collect_codex():
+def _normalize_family_sum(fsum: dict) -> dict:
+    out = dict(fsum)
+    out["todayTokens"] = int(out.get("todayTokens", out.get("tokensToday", 0)))
+    out["tokensToday"] = out["todayTokens"]
+    out["sevenDayTokens"] = int(out.get("sevenDayTokens", out.get("tokens7d", 0)))
+    out["tokens7d"] = out["sevenDayTokens"]
+    out["thirtyDayTokens"] = int(out.get("thirtyDayTokens", out.get("tokens30d", 0)))
+    out["tokens30d"] = out["thirtyDayTokens"]
+    out["allTimeTokens"] = int(out.get("allTimeTokens", 0))
+    out["todayCostUsd"] = round(float(out.get("todayCostUsd", out.get("costUsdToday", 0.0))), 2)
+    out["costUsdToday"] = out["todayCostUsd"]
+    out["sevenDayCostUsd"] = round(float(out.get("sevenDayCostUsd", out.get("costUsd7d", 0.0))), 2)
+    out["costUsd7d"] = out["sevenDayCostUsd"]
+    out["thirtyDayCostUsd"] = round(float(out.get("thirtyDayCostUsd", out.get("costUsd30d", 0.0))), 2)
+    out["costUsd30d"] = out["thirtyDayCostUsd"]
+    out["allTimeCostUsd"] = round(float(out.get("allTimeCostUsd", 0.0)), 2)
+    out["todayPrompts"] = int(out.get("todayPrompts", out.get("promptsToday", 0)))
+    out["promptsToday"] = out["todayPrompts"]
+    out["thirtyDayPrompts"] = int(out.get("thirtyDayPrompts", out.get("prompts30d", 0)))
+    out["prompts30d"] = out["thirtyDayPrompts"]
+    out["todaySessions"] = int(out.get("todaySessions", out.get("sessionsToday", 0)))
+    out["sessionsToday"] = out["todaySessions"]
+    out["thirtyDaySessions"] = int(out.get("thirtyDaySessions", out.get("sessions30d", 0)))
+    out["sessions30d"] = out["thirtyDaySessions"]
+    return out
+
+
+def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claude_split: bool) -> dict:
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    agy_sum = _normalize_family_sum(agy_sum)
+    claude_sum = _normalize_family_sum(claude_sum)
+    grand_total = _normalize_family_sum({
+        "todayTokens": agy_sum["todayTokens"] + claude_sum["todayTokens"],
+        "sevenDayTokens": agy_sum["sevenDayTokens"] + claude_sum["sevenDayTokens"],
+        "thirtyDayTokens": agy_sum["thirtyDayTokens"] + claude_sum["thirtyDayTokens"],
+        "allTimeTokens": agy_sum["allTimeTokens"] + claude_sum["allTimeTokens"],
+        "todayCostUsd": round(agy_sum["todayCostUsd"] + claude_sum["todayCostUsd"], 2),
+        "sevenDayCostUsd": round(agy_sum["sevenDayCostUsd"] + claude_sum["sevenDayCostUsd"], 2),
+        "thirtyDayCostUsd": round(agy_sum["thirtyDayCostUsd"] + claude_sum["thirtyDayCostUsd"], 2),
+        "allTimeCostUsd": round(agy_sum["allTimeCostUsd"] + claude_sum["allTimeCostUsd"], 2),
+        "todayPrompts": agy_sum["todayPrompts"] + claude_sum["todayPrompts"],
+        "thirtyDayPrompts": agy_sum["thirtyDayPrompts"] + claude_sum["thirtyDayPrompts"],
+        "todaySessions": agy_sum["todaySessions"] + claude_sum["todaySessions"],
+        "thirtyDaySessions": agy_sum["thirtyDaySessions"] + claude_sum["thirtyDaySessions"],
+    })
+    profiles_list = list(agy_sum.get("profiles", [])) + list(claude_sum.get("profiles", []))
+    return {
+        "schemaVersion": 2,
+        "updatedAt": now_iso,
+        "executionScope": "localhost",
+        "localhostOnly": True,
+        "splitProfiles": bool(agy_split or claude_split),
+        "agySplitProfiles": bool(agy_split),
+        "claudeSplitProfiles": bool(claude_split),
+        "grandTotal": grand_total,
+        "groups": {
+            "agy": agy_sum,
+            "claude": claude_sum,
+        },
+        "agy": agy_sum,
+        "claude": claude_sum,
+        "profiles": profiles_list,
+    }
+
+
+def _enrich_record_with_summary(record: dict, family_sum: dict, grand_summary: dict) -> dict:
+    enriched = dict(record)
+    agg = dict(enriched.get("aggregation") or family_sum)
+    agg["grandTotal"] = grand_summary["grandTotal"]
+    agg["groups"] = grand_summary["groups"]
+    enriched["aggregation"] = agg
+    enriched["groupTotals"] = family_sum
+    enriched["grandTotals"] = grand_summary["grandTotal"]
+    return enriched
+
+
+def collect_agy_and_claude(
+    want_agy: bool = True,
+    want_agy_sandbox: bool | None = None,
+    want_claude: bool = True,
+    want_fiserv_claude: bool | None = None,
+    force: bool = False,
+    split_override: bool | None = None,
+) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import agy_core
+    import claude_core
+
+    agy_split = split_override if split_override is not None else agy_core.is_agy_split_enabled()
+    claude_split = split_override if split_override is not None else claude_core.is_claude_split_enabled()
+    if want_agy_sandbox is True:
+        agy_split = True
+    if want_fiserv_claude is True:
+        claude_split = True
+
+    agy_profiles = agy_core.collect_agy_profiles(force=force, split_profiles=agy_split)
+    claude_profiles = claude_core.collect_claude_profiles(force=force, split_profiles=claude_split)
+
+    agy_sum = agy_profiles["summary"]
+    claude_sum = claude_profiles["summary"]
+    grand_summary = _build_grand_summary(agy_sum, claude_sum, agy_split, claude_split)
+
+    if want_agy or want_agy_sandbox:
+        if agy_split:
+            if want_agy:
+                rec_agy = _enrich_record_with_summary(agy_profiles["agy"], agy_sum, grand_summary)
+                write_state_file("agy", rec_agy)
+            if want_agy_sandbox is not False:
+                rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
+                write_state_file("agy-sandbox", rec_sb)
+        else:
+            rec_all_agy = _enrich_record_with_summary(agy_profiles["all"], agy_sum, grand_summary)
+            write_state_file("agy", rec_all_agy)
+            if want_agy_sandbox:
+                rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
+                write_state_file("agy-sandbox", rec_sb)
+            else:
+                remove_state_file("agy-sandbox")
+
+    if want_claude or want_fiserv_claude:
+        if claude_split:
+            if want_fiserv_claude is not False:
+                rec_fiserv = _enrich_record_with_summary(claude_profiles["fiserv-claude"], claude_sum, grand_summary)
+                write_state_file("fiserv-claude", rec_fiserv)
+            if want_claude:
+                rec_personal = _enrich_record_with_summary(claude_profiles["claude-personal"], claude_sum, grand_summary)
+                write_state_file("claude", rec_personal)
+        else:
+            rec_all_claude = _enrich_record_with_summary(claude_profiles["all"], claude_sum, grand_summary)
+            write_state_file("claude", rec_all_claude)
+            if want_fiserv_claude:
+                rec_fiserv = _enrich_record_with_summary(claude_profiles["fiserv-claude"], claude_sum, grand_summary)
+                write_state_file("fiserv-claude", rec_fiserv)
+            else:
+                remove_state_file("fiserv-claude")
+
+    write_state_file("_summary", grand_summary)
+    return grand_summary
+
+
+# =============================================================================
+# OpenAI Codex
+# =============================================================================
+
+def collect_codex(force: bool = False):
+    usage_dir = get_usage_dir()
+    codex_file = usage_dir / "codex.json"
+    if not force and not is_provider_enabled("codex", default=False) and codex_file.exists():
+        return
+
     codex_cmd = shutil.which("codex")
     if not codex_cmd:
         candidates = [
@@ -507,73 +328,72 @@ def collect_codex():
         write_state_file("codex", record)
         return
 
-    # Non-blocking RPC to bypass buffered I/O starvation
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            [codex_cmd, "-s", "read-only", "-a", "on-request", "app-server"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+    if is_provider_enabled("codex", default=False) or force:
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [codex_cmd, "-s", "read-only", "-a", "on-request", "app-server"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
 
-        def rpc(req_id: int, method: str, params: dict | None = None, timeout: float = 4.0) -> dict:
-            msg = json.dumps({"id": req_id, "method": method, "params": params or {}}) + "\n"
-            proc.stdin.write(msg.encode())
-            proc.stdin.flush()
-            deadline = time.time() + timeout
-            buf = b""
-            while time.time() < deadline:
-                try:
-                    chunk = os.read(proc.stdout.fileno(), 4096)
-                    if chunk:
-                        buf += chunk
-                except BlockingIOError:
-                    pass
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    if not line.strip():
-                        continue
+            def rpc(req_id: int, method: str, params: dict | None = None, timeout: float = 2.5) -> dict:
+                msg = json.dumps({"id": req_id, "method": method, "params": params or {}}) + "\n"
+                proc.stdin.write(msg.encode())
+                proc.stdin.flush()
+                deadline = time.time() + timeout
+                buf = b""
+                while time.time() < deadline:
                     try:
-                        res = json.loads(line.decode())
-                        if res.get("id") == req_id:
-                            return res
+                        chunk = os.read(proc.stdout.fileno(), 4096)
+                        if chunk:
+                            buf += chunk
+                    except BlockingIOError:
+                        pass
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        try:
+                            res = json.loads(line.decode())
+                            if res.get("id") == req_id:
+                                return res
+                        except Exception:
+                            pass
+                    time.sleep(0.01)
+                raise TimeoutError(method)
+
+            rpc(1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=2.5)
+            proc.stdin.write(b'{"method": "initialized", "params": {}}\n')
+            proc.stdin.flush()
+            account_msg = rpc(2, "account/read", timeout=2.0)
+            limits_msg = rpc(3, "account/rateLimits/read", timeout=2.0)
+
+            account = (account_msg.get("result") or {}).get("account") or {}
+            limits = (limits_msg.get("result") or {}).get("rateLimits") or {}
+            plan = limits.get("planType") or account.get("planType") or account.get("type") or ""
+            result["tierLabel"] = str(plan).capitalize() if plan else ""
+
+            for window in (limits.get("primary"), limits.get("secondary")):
+                entry = limit_window_entry(window)
+                if entry:
+                    result["limits"].append(entry)
+        except Exception as exc:
+            result["usageStatusText"] = "Codex limits unavailable"
+            result["authHelpText"] = str(exc)
+        finally:
+            if proc:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=0.5)
+                except Exception:
+                    try:
+                        proc.kill()
                     except Exception:
                         pass
-                time.sleep(0.01)
-            raise TimeoutError(method)
 
-        rpc(1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=4.0)
-        proc.stdin.write(b'{"method": "initialized", "params": {}}\n')
-        proc.stdin.flush()
-        account_msg = rpc(2, "account/read", timeout=3.0)
-        limits_msg = rpc(3, "account/rateLimits/read", timeout=3.0)
-
-        account = (account_msg.get("result") or {}).get("account") or {}
-        limits = (limits_msg.get("result") or {}).get("rateLimits") or {}
-        plan = limits.get("planType") or account.get("planType") or account.get("type") or ""
-        result["tierLabel"] = str(plan).capitalize() if plan else ""
-
-        for window in (limits.get("primary"), limits.get("secondary")):
-            entry = limit_window_entry(window)
-            if entry:
-                result["limits"].append(entry)
-    except Exception as exc:
-        result["usageStatusText"] = "Codex limits unavailable"
-        result["authHelpText"] = str(exc)
-    finally:
-        if proc:
-            try:
-                proc.terminate()
-                proc.wait(timeout=1)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-    # Optional local stats via upstream helper if available
     stats = {}
     upstream_bin = Path("/usr/share/omarchy/bin/omarchy-agent-usage-codex")
     if upstream_bin.is_file():
@@ -636,55 +456,48 @@ def collect_grok():
                             continue
                         try:
                             obj = json.loads(line)
+                            sender = obj.get("sender")
                             ts = obj.get("timestamp")
                             entry_date_str = session_date_str
                             if ts:
                                 try:
-                                    entry_date_str = local_date_str(dt.datetime.fromtimestamp(ts).date())
+                                    if isinstance(ts, (int, float)):
+                                        entry_date_str = local_date_str(dt.datetime.fromtimestamp(ts / 1000.0 if ts > 1e11 else ts).date())
+                                    elif isinstance(ts, str):
+                                        entry_date_str = local_date_str(dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).date())
                                 except Exception:
                                     pass
 
-                            update = obj.get("params", {}).get("update", {})
-                            if update.get("sessionUpdate") == "turn_completed":
+                            if sender == "user":
                                 total_prompts += 1
                                 active_days.add(entry_date_str)
                                 if entry_date_str == today_str:
                                     today_prompts += 1
                                     today_sessions.add(session_id)
-
-                                u = update.get("usage", {})
-                                turn_in = u.get("inputTokens", 0)
-                                turn_out = u.get("outputTokens", 0)
-                                turn_total = turn_in + turn_out
-
+                            elif sender == "assistant":
+                                msg = obj.get("message", "")
+                                est_tokens = max(1, len(msg) // 4)
+                                model = obj.get("model") or "grok-4.6"
+                                b = model_usage.setdefault(model, {
+                                    "inputTokens": 0,
+                                    "outputTokens": 0,
+                                    "cacheReadInputTokens": 0,
+                                    "cacheCreationInputTokens": 0,
+                                })
+                                b["outputTokens"] += est_tokens
                                 if entry_date_str in recent:
-                                    recent[entry_date_str]["messageCount"] += turn_total
-
-                                mu = u.get("modelUsage", {})
-                                if not mu:
-                                    mu = {"grok-4.6": {"inputTokens": turn_in, "outputTokens": turn_out}}
-
-                                for mname, mstats in mu.items():
-                                    b = model_usage.setdefault(mname, {
-                                        "inputTokens": 0,
-                                        "outputTokens": 0,
-                                        "cacheReadInputTokens": 0,
-                                        "cacheCreationInputTokens": 0,
-                                    })
-                                    b["inputTokens"] += mstats.get("inputTokens", 0)
-                                    b["outputTokens"] += mstats.get("outputTokens", 0)
-                                    b["cacheReadInputTokens"] += mstats.get("cachedReadTokens", 0)
-
-                                    if entry_date_str == today_str:
-                                        today_tokens += turn_total
-                                        today_tokens_by_model[mname] = today_tokens_by_model.get(mname, 0) + turn_total
+                                    recent[entry_date_str]["messageCount"] += est_tokens
+                                if entry_date_str == today_str:
+                                    today_tokens += est_tokens
+                                    today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + est_tokens
+                                active_days.add(entry_date_str)
                         except Exception:
                             continue
             except Exception:
                 continue
 
-    auth_file = Path.home() / ".grok" / "auth.json"
-    is_ready = auth_file.is_file() and auth_file.stat().st_size > 5
+    grok_auth_check = Path.home() / ".grok" / "user-settings.json"
+    is_ready = grok_auth_check.is_file()
 
     record = {
         "schemaVersion": 1,
@@ -825,24 +638,46 @@ def main():
     parser.add_argument(
         "agents",
         nargs="*",
-        help="Specific agent(s) to collect (agy, codex, grok, copilot). If omitted, collects all.",
+        help="Specific agent(s) to collect (agy, agy-sandbox, claude, fiserv-claude, codex, grok, copilot). If omitted, collects all.",
     )
     parser.add_argument("--force", action="store_true", help="Force rescan")
     parser.add_argument("--limits-only", action="store_true", help="Only refresh limits")
+    parser.add_argument("--split-profiles", action="store_true", help="Force split-profile emission")
+    parser.add_argument("--no-split-profiles", action="store_true", help="Force aggregated single-profile emission")
     args, _ = parser.parse_known_args()
 
-    collectors = {
-        "agy": collect_agy,
-        "codex": collect_codex,
-        "grok": collect_grok,
-        "copilot": collect_copilot,
-    }
+    split_override: bool | None = None
+    if args.split_profiles:
+        split_override = True
+    elif args.no_split_profiles:
+        split_override = False
 
-    targets = [a.lower() for a in args.agents] if args.agents else list(collectors.keys())
+    targets = [a.lower() for a in args.agents] if args.agents else ["agy", "claude", "codex", "grok", "copilot"]
+
+    want_agy = any(t in ("agy", "all") for t in targets)
+    want_agy_sb = True if "agy-sandbox" in targets else (None if want_agy else False)
+    want_claude = any(t in ("claude", "all") for t in targets)
+    want_fiserv = True if "fiserv-claude" in targets else (None if want_claude else False)
+
+    if want_agy or want_agy_sb or want_claude or want_fiserv:
+        collect_agy_and_claude(
+            want_agy=want_agy,
+            want_agy_sandbox=want_agy_sb,
+            want_claude=want_claude,
+            want_fiserv_claude=want_fiserv,
+            force=args.force,
+            split_override=split_override,
+        )
+
     for target in targets:
-        fn = collectors.get(target)
-        if fn:
-            fn()
+        if target in ("agy", "agy-sandbox", "claude", "fiserv-claude", "all"):
+            continue
+        elif target == "codex":
+            collect_codex(force=args.force and ("codex" in args.agents))
+        elif target == "grok":
+            collect_grok()
+        elif target == "copilot":
+            collect_copilot()
         else:
             print(f"Unknown agent: {target}", file=sys.stderr)
 

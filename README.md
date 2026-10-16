@@ -1,6 +1,6 @@
-# AI Agents for Omarchy
+# AI Agents for Omarchy (`nertwork.agents`)
 
-A comprehensive, native Omarchy status bar panel and widget for tracking AI coding assistants and models.
+A comprehensive, native Omarchy status bar panel and widget for tracking AI coding assistants, token consumption, rate limits, and API/subscription spend on `localhost`.
 
 <p align="center">
   <b>Antigravity (AGY)</b> • <b>Claude Code</b> • <b>OpenAI Codex</b> • <b>GitHub Copilot</b> • <b>Grok CLI</b> • <b>Fireworks AI</b>
@@ -14,21 +14,21 @@ A comprehensive, native Omarchy status bar panel and widget for tracking AI codi
 
 ## Features
 
-- **Unified Multi-Agent Dashboard**: Monitor subscription limits, token consumption, and session activity across all your AI assistants in a single panel.
-- **Deep Token Tracking & Analytics**:
-  - **Antigravity (AGY)**: Full Vertex AI session history, Gemini 3.8/3.7 Flash & 2.5 Pro token breakdown (input, output, cache-read, and cache-creation), 7-day token history bars, and session counts.
-  - **Claude Code**: Live 5-hour rolling session window and 7-day weekly rate limits with reset countdowns, daily prompt and session token totals, and model tracking.
-  - **OpenAI Codex**: Live primary window (5h) and secondary window (7d weekly) limits via robust non-blocking RPC, daily session counts, and model breakdown.
-  - **GitHub Copilot**: CLI session tracking, daily prompt totals, output token counts, cache-read tracking, and model breakdown.
-  - **Grok CLI**: Local session token consumption (input, output, cached), daily prompts, active session tracking, Grok 4.6 breakdown, and 7-day history.
-  - **Fireworks AI**: Optional prepaid balance tracking, remaining vs funded credits, and rate limit utilization.
-- **Polished Responsive UI**:
-  - Clean tab navigation with automatic button text elision, clipping, and hover tooltips.
-  - Status indicators that reflect account readiness without false warning banners.
-  - Dark and light theme SVG icons for every agent.
-- **Self-Contained & Plug-and-Play**:
-  - Bundled collectors—no external helper scripts or manual setup required.
-  - Native integration with Omarchy Shell and OmaSettings.
+- **Out-of-the-Box Zero-Config Default**:
+  - Works immediately on any Omarchy desktop with `AGY` and `Claude` enabled by default, scanning local session directories (`~/.gemini/antigravity*` and `~/.claude`) on `localhost` with zero remote SSH dependencies.
+- **Modular Multi-Profile Architecture (`v2.3.0`)**:
+  - **Independent AGY Modules**: Track a single unified AGY profile or split usage across primary (`agy`) and secondary/sandbox (`agy-sandbox`) Google Cloud / Vertex AI projects without double-counting.
+  - **Independent Claude Code Modules**: Track a single unified Claude profile (`~/.claude`) or split usage across a primary personal profile (`claude`) and a secondary work/enterprise profile (`fiserv-claude` / `~/.claude-work`) with workspace glob routing.
+  - **Combined & Family Rollups**: View individual provider tabs or switch to the **Combined** rollup tab showing localhost grand totals alongside per-family (`AGY Σ`, `Claude Σ`) spend and token summaries.
+- **Deep Token & Spend Analytics**:
+  - **Antigravity (AGY)**: Local `brain/*/transcript*.jsonl` scanning merged with optional Vertex AI Cloud Monitoring quota metrics, model-level input/output/cache token and cost attribution, 7-day daily activity bars, and per-project breakdowns.
+  - **Claude Code**: Live 5-hour rolling session window and 7-day weekly rate limits with reset countdowns, daily prompt and session token totals, model cost attribution, and top workspace breakdowns.
+  - **OpenAI Codex**: Live primary window (5h) and secondary window (7d weekly) limits via non-blocking local RPC, daily session counts, and model breakdown.
+  - **GitHub Copilot & Grok CLI**: Local CLI session tracking, daily prompt and token totals, 7-day history bars, and model breakdown.
+- **Native Responsive UI & In-Panel Settings**:
+  - Top bar badge with configurable cost window (`Today`, `7d`, or `30d`) and display mode (`Aggregated Localhost Spend`, `Active Tab Spend`, or `Icon Only`).
+  - Built-in **Settings Drawer** directly inside the popup panel (gear icon) plus full **OmaSettings** integration (`Settings.qml`).
+  - Dark and light theme SVG icons for every supported provider.
 
 ---
 
@@ -57,58 +57,115 @@ omarchy plugin remove nertwork.agents
 ## Dependencies
 
 - **Omarchy Desktop / Omarchy Shell**: Required plugin host runtime and top bar container.
-- **Python 3**: Uses only the Python standard library for the bundled metrics collector.
+- **Python 3**: Uses only the Python standard library for the bundled localhost metrics collector (`bin/collector.py`).
 - **Optional Provider CLI Tools**: The plugin monitors local session logs and auth states for the tools you have installed:
   - Antigravity (`agy` / Vertex AI ADC credentials)
-  - Claude Code (`claude` / Anthropic OAuth)
+  - Claude Code (`claude` / Anthropic OAuth or Enterprise Bedrock)
   - OpenAI Codex (`codex` / ChatGPT session state)
   - GitHub Copilot (`copilot` / GitHub CLI session state)
   - Grok CLI (`grok` / xAI CLI auth state)
 
 ---
 
-## Supported Agents & Token Tracking
+## Supported Providers & Telemetry
 
-| Agent | Source / Provider | Tracked Metrics & Token Analytics |
-|---|---|---|
-| **Antigravity (AGY)** | Google Vertex AI ADC | Today's prompts & sessions, today's total tokens, input/output/cache-read/cache-creation token breakdown, Gemini 3.8/3.7 Flash & 2.5 Pro breakdown, 7-day token history |
-| **Claude Code** | Anthropic OAuth | 5-hour rolling limit window, 7-day weekly rate limit, live reset countdowns, daily prompts and session token totals, active model breakdown |
-| **OpenAI Codex** | OpenAI ChatGPT Plus/Pro | 5-hour primary limit window, 7-day secondary limit window, non-blocking RPC state refresh, daily session counts, model breakdown |
-| **GitHub Copilot** | GitHub CLI Copilot | Daily prompts & sessions, total output tokens, input and cache-read tokens, model breakdown, 7-day history |
-| **Grok CLI** | xAI CLI Auth | Daily prompts & sessions, total token consumption, input/output/cached tokens, Grok 4.6 breakdown, 7-day history |
-| **Fireworks AI** | Fireworks API (Optional) | Credit balances, remaining vs funded prepaid allowances, rate limit utilization |
+| Module ID | Default Label | Source / Provider | Tracked Metrics & Token Analytics |
+|---|---|---|---|
+| `agy` | **AGY** | Google Vertex AI / Antigravity CLI | Local `transcript*.jsonl` session scanning, optional GCP Cloud Monitoring quota metrics, Today / 7d / 30d cost & token totals, 7-day bar chart, model breakdown |
+| `agy-sandbox` | **AGY Sandbox** | Secondary Antigravity GCP Project | Dedicated secondary/sandbox GCP project telemetry, workspace glob routing, independent cost & token attribution |
+| `claude` | **Claude** | Claude Code (`~/.claude`) | 5-hour session & 7-day weekly rate limits, Today / 7d / 30d cost & token totals, model breakdown, top workspaces |
+| `fiserv-claude` | **Claude Work** | Secondary / Enterprise Claude Profile | Dedicated secondary/work Claude profile (`~/.claude-work` or custom `configDir`) + workspace glob routing, 5h/7d utilization, cost & token attribution |
+| `codex` | **Codex** | OpenAI Codex CLI (`~/.codex`) | 5-hour primary & 7-day secondary limit windows, Today / 30d token & session analytics, model breakdown |
+| `copilot` | **Copilot** | GitHub Copilot CLI (`~/.copilot`) | Daily prompts & sessions, output & cache-read tokens, 7-day history, model breakdown |
+| `grok` | **Grok** | xAI Grok CLI (`~/.grok`) | Daily prompts & sessions, input/output/cached tokens, 7-day history, model breakdown |
 
 ---
 
 ## Shortcuts & Controls
 
-- **Left-Click (Bar Icon)**: Toggle panel open / closed.
-- **Middle-Click (Bar Icon)**: Cycle to next active AI agent.
-- **Right-Click (Bar Icon)**: Launch default agent selector (`omarchy-agent --pick`).
-- **Keyboard Navigation (inside panel)**:
-  - `h` / `l` or `Left` / `Right`: Switch agent tabs.
-  - `r`: Force immediate refresh of usage and limits.
-  - `Esc`: Close panel.
+- **Left-Click (Bar Badge)**: Toggle the AI Agents dashboard panel open or closed.
+- **Middle-Click (Bar Badge)**: Cycle to the next enabled AI agent module.
+- **Scroll Wheel (Bar Badge)**: Cycle forward/backward through enabled modules.
+- **Gear Icon (Panel Header)**: Toggle the in-panel modular Settings Drawer.
+- **IPC Commands**:
+  - `omarchy-shell nertwork.agents toggle` — Toggle panel visibility.
+  - `omarchy-shell nertwork.agents refresh` — Trigger an immediate collector refresh.
+  - `omarchy-shell nertwork.agents cycle` — Cycle active provider tab.
+  - `omarchy-shell nertwork.agents select <id|combined>` — Select a specific module tab or the Combined view.
+  - `omarchy-shell nertwork.agents status` — Print live JSON status of enabled modules and aggregated totals.
 
 ---
 
-## Configuration
+## Configuration & Multi-Profile Customization
 
-You can configure AI Agents via OmaSettings or directly in `~/.config/omarchy/shell.json`:
+All modules and display options can be toggled live from the **in-panel Settings gear button** or **OmaSettings**. Settings are stored in `~/.local/state/omarchy/settings/nertwork.agents.json` and `~/.config/omarchy/agents/profiles.json`.
+
+### Optional Multi-Profile Example (`~/.config/omarchy/agents/profiles.json`)
+
+To customize labels, GCP projects, config directories, or workspace routing globs for split `AGY` and `Claude` profiles:
 
 ```json
 {
-  "id": "nertwork.agents",
-  "refreshIntervalSec": 900,
+  "schemaVersion": 2,
+  "localhostOnly": true,
+  "aggregateByDefault": true,
+  "showAggregatedSummary": true,
+  "barDisplayMode": "aggregated",
+  "showBarCost": true,
+  "barCostWindow": "30d",
   "providers": {
-    "agy": { "enabled": true },
-    "claude": { "enabled": true },
-    "codex": { "enabled": true },
-    "copilot": { "enabled": true },
-    "grok": { "enabled": true }
+    "agy": {
+      "enabled": true,
+      "profile": "my-gcp-prod",
+      "label": "AGY",
+      "shortLabel": "AGY · Prod",
+      "displayName": "Antigravity (Prod)",
+      "badge": "my-gcp-prod",
+      "gcpProject": "my-gcp-prod",
+      "description": "Antigravity CLI · my-gcp-prod"
+    },
+    "agy-sandbox": {
+      "enabled": true,
+      "profile": "my-gcp-sandbox",
+      "label": "AGY Sandbox",
+      "shortLabel": "AGY · Sandbox",
+      "displayName": "Antigravity (Sandbox)",
+      "badge": "my-gcp-sandbox",
+      "gcpProject": "my-gcp-sandbox",
+      "description": "Antigravity CLI · my-gcp-sandbox"
+    },
+    "fiserv-claude": {
+      "enabled": true,
+      "profile": "work",
+      "label": "Claude Work",
+      "shortLabel": "Claude · Work",
+      "displayName": "Claude Code (Work)",
+      "badge": "work",
+      "configDir": "~/.claude-work",
+      "authMode": "AWS Bedrock / Enterprise",
+      "tierPrefix": "Enterprise",
+      "dirs": ["~/.claude-work"],
+      "sharedProjectGlobs": ["*work-*", "*enterprise-*"]
+    },
+    "claude": {
+      "enabled": true,
+      "profile": "personal",
+      "label": "Claude",
+      "shortLabel": "Claude",
+      "displayName": "Claude Code (Personal)",
+      "badge": "personal",
+      "configDir": "~/.claude",
+      "dirs": ["~/.claude"]
+    }
   }
 }
 ```
+
+### Environment Variables (Optional)
+
+- `OMARCHY_AGY_PROJECTS`: Comma-separated GCP projects to query via Vertex AI Cloud Monitoring.
+- `OMARCHY_AGY_DIRS`: Colon/comma-separated extra Antigravity directories to scan alongside `~/.gemini/antigravity-cli`.
+- `OMARCHY_CLAUDE_DIRS`: Colon/comma-separated extra Claude Code profile directories to scan alongside `~/.claude`.
 
 ---
 

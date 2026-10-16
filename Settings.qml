@@ -1,0 +1,271 @@
+import QtQuick
+import QtQuick.Controls
+import Quickshell
+import qs.Commons
+import qs.Ui as Ui
+
+Item {
+  id: root
+
+  property var usage: null
+  property color fgColor: Color.popups.text
+  property color bgColor: Color.popups.background
+  property color borderColor: Color.popups.border
+  property color accentColor: Color.accent
+  property color mutedColor: Qt.darker(fgColor, 1.35)
+  property color subtleColor: Qt.darker(fgColor, 1.72)
+
+  implicitWidth: parent ? parent.width : Style.space(516)
+  implicitHeight: settingsColumn.implicitHeight
+
+  component SectionCard: Rectangle {
+    id: card
+    property string title: ""
+    property string subtitle: ""
+    default property alias content: innerColumn.data
+
+    width: parent ? parent.width : Style.space(516)
+    implicitHeight: innerColumn.implicitHeight + Style.space(22)
+    radius: Style.cornerRadius
+    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.035)
+    border.width: 1
+    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
+
+    Column {
+      id: innerColumn
+      anchors.fill: parent
+      anchors.margins: Style.space(11)
+      spacing: Style.space(8)
+
+      Column {
+        visible: card.title !== ""
+        width: parent.width
+        spacing: Style.space(2)
+
+        Text {
+          textFormat: Text.PlainText
+          text: card.title
+          color: root.mutedColor
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.weight: Font.Bold
+          font.letterSpacing: 0.7
+        }
+
+        Text {
+          visible: card.subtitle !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: card.subtitle
+          color: root.subtleColor
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+      }
+    }
+  }
+
+  component ToggleRow: Rectangle {
+    id: rowRoot
+    property string label: ""
+    property string description: ""
+    property string badgeText: ""
+    property bool checked: false
+    signal toggled(bool value)
+
+    width: parent ? parent.width : Style.space(492)
+    implicitHeight: Math.max(Style.space(36), textCol.implicitHeight + Style.space(10))
+    radius: Math.max(4, Style.cornerRadius - 2)
+    color: rowHover.containsMouse
+      ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.05)
+      : "transparent"
+
+    Column {
+      id: textCol
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.right: toggleSwitch.left
+      anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Row {
+        spacing: Style.space(6)
+
+        Text {
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          text: rowRoot.label
+          color: root.fgColor
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          font.weight: Font.Medium
+        }
+
+        Rectangle {
+          visible: rowRoot.badgeText !== ""
+          anchors.verticalCenter: parent.verticalCenter
+          width: badgeLabel.implicitWidth + Style.space(10)
+          height: Style.space(16)
+          radius: height / 2
+          color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.14)
+          border.width: 1
+          border.color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.35)
+
+          Text {
+            id: badgeLabel
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: rowRoot.badgeText
+            color: root.accentColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption - 1
+            font.weight: Font.DemiBold
+          }
+        }
+      }
+
+      Text {
+        visible: rowRoot.description !== ""
+        width: parent.width
+        textFormat: Text.PlainText
+        text: rowRoot.description
+        color: root.subtleColor
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+
+    Ui.ToggleSwitch {
+      id: toggleSwitch
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      checked: rowRoot.checked
+      foreground: root.fgColor
+      accent: root.accentColor
+      onToggled: rowRoot.toggled(!rowRoot.checked)
+    }
+
+    MouseArea {
+      id: rowHover
+      anchors.left: parent.left
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.right: toggleSwitch.left
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: rowRoot.toggled(!rowRoot.checked)
+    }
+  }
+
+  Column {
+    id: settingsColumn
+    width: parent.width
+    spacing: Style.space(10)
+
+    SectionCard {
+      title: "EXECUTION & AGGREGATION"
+      subtitle: "Single-instance localhost defaults with optional multi-module rollups."
+
+      ToggleRow {
+        label: "Localhost-only collection"
+        badgeText: "localhost"
+        description: "Collect usage exclusively from local transcripts on this host (no SSH fan-out)"
+        checked: root.usage ? root.usage.localhostOnly : true
+        onToggled: function(val) {
+          if (root.usage) root.usage.setSetting("localhostOnly", val)
+        }
+      }
+
+      ToggleRow {
+        label: "Show aggregated totals banner"
+        badgeText: "Overview"
+        description: "Display combined AGY + Claude localhost spend and token rollup at top of panel"
+        checked: root.usage ? root.usage.showAggregatedSummary : true
+        onToggled: function(val) {
+          if (root.usage) root.usage.setSetting("showAggregatedSummary", val)
+        }
+      }
+
+      ToggleRow {
+        label: "Show cost in status bar"
+        badgeText: root.usage && root.usage.barDisplayMode === "active" ? "Active Module" : "Aggregated $"
+        description: "Render live 30d USD spend next to the AI Agents status bar icon"
+        checked: root.usage ? root.usage.showBarCost : true
+        onToggled: function(val) {
+          if (root.usage) root.usage.setSetting("showBarCost", val)
+        }
+      }
+
+      ToggleRow {
+        label: "Bar widget displays aggregated total"
+        badgeText: "30d Rollup"
+        description: "When enabled, bar cost shows combined localhost spend; otherwise shows active tab"
+        checked: root.usage ? (root.usage.barDisplayMode !== "active") : true
+        onToggled: function(val) {
+          if (root.usage) root.usage.setSetting("barDisplayMode", val ? "aggregated" : "active")
+        }
+      }
+    }
+
+    SectionCard {
+      title: "AGY MODULES (GOOGLE CLOUD / VERTEX AI)"
+      subtitle: "Enable one or both Antigravity GCP billing/quota projects."
+
+      Repeater {
+        model: root.usage ? root.usage.providersByGroup("agy") : []
+        delegate: ToggleRow {
+          required property var modelData
+          label: modelData.displayName
+          badgeText: modelData.badge
+          description: modelData.description
+          checked: modelData.enabled
+          onToggled: function(val) {
+            if (root.usage) root.usage.setProviderEnabled(modelData.id, val)
+          }
+        }
+      }
+    }
+
+    SectionCard {
+      title: "CLAUDE MODULES (WORK / ENTERPRISE & PERSONAL)"
+      subtitle: "Enable secondary/work Claude profile and/or primary personal Claude (~/.claude)."
+
+      Repeater {
+        model: root.usage ? root.usage.providersByGroup("claude") : []
+        delegate: ToggleRow {
+          required property var modelData
+          label: modelData.displayName
+          badgeText: modelData.badge
+          description: modelData.description
+          checked: modelData.enabled
+          onToggled: function(val) {
+            if (root.usage) root.usage.setProviderEnabled(modelData.id, val)
+          }
+        }
+      }
+    }
+
+    SectionCard {
+      title: "OTHER AI CODING PROVIDERS"
+      subtitle: "Optional local CLI and IDE coding assistants."
+
+      Repeater {
+        model: root.usage ? root.usage.providersByGroup("other") : []
+        delegate: ToggleRow {
+          required property var modelData
+          label: modelData.displayName
+          badgeText: modelData.badge
+          description: modelData.description
+          checked: modelData.enabled
+          onToggled: function(val) {
+            if (root.usage) root.usage.setProviderEnabled(modelData.id, val)
+          }
+        }
+      }
+    }
+  }
+}
