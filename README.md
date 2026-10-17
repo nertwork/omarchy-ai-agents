@@ -71,8 +71,10 @@ omarchy plugin remove nertwork.agents
 
 | Module ID | Default Label | Source / Provider | Tracked Metrics & Token Analytics |
 |---|---|---|---|
-| `agy` | **AGY** | Google Vertex AI / Antigravity CLI | Local `transcript*.jsonl` session scanning, optional GCP Cloud Monitoring quota metrics, Today / 7d / 30d cost & token totals, 7-day bar chart, model breakdown |
-| `agy-sandbox` | **AGY Sandbox** | Secondary Antigravity GCP Project | Dedicated secondary/sandbox GCP project telemetry, workspace glob routing, independent cost & token attribution |
+| `agy-personal` | **AGY Personal** | Google OAuth (`antigravity-cli-personal`) | Personal & Homelab (`controller-ai-ops`, `p1-ai-ops`, `smarthome-ai-ops`, `it-titan-*`) session scanning across 5 mesh nodes, Today / 7d / 30d cost & token totals |
+| `agy-census` | **AGY Census** | Google OAuth (`antigravity-cli-personal` · CSVD) | Dedicated U.S. Census Bureau (`census-ai-ops`, CSVD / IEBCloud) workspace & session telemetry, Today / 7d / 30d cost & token attribution |
+| `agy` | **AGY Clover** | Google Vertex AI (`clover-corp-ai`) | Work (`~/Work`, `clover-ai-ops`, `snv-rtr-ops`, `corp-proxmox`) session scanning + GCP Cloud Monitoring quota metrics |
+| `agy-sandbox` | **AGY Sandbox** | Secondary Antigravity GCP Project (`jfar-sandbox`) | Dedicated secondary/sandbox GCP project telemetry, workspace glob routing, independent cost & token attribution |
 | `claude` | **Claude** | Claude Code (`~/.claude`) | 5-hour session & 7-day weekly rate limits, Today / 7d / 30d cost & token totals, model breakdown, top workspaces |
 | `fiserv-claude` | **Claude Work** | Secondary / Enterprise Claude Profile | Dedicated secondary/work Claude profile (`~/.claude-work` or custom `configDir`) + workspace glob routing, 5h/7d utilization, cost & token attribution |
 | `codex` | **Codex** | OpenAI Codex CLI (`~/.codex`) | 5-hour primary & 7-day secondary limit windows, Today / 30d token & session analytics, model breakdown |
@@ -86,7 +88,14 @@ omarchy plugin remove nertwork.agents
 - **Left-Click (Bar Badge)**: Toggle the AI Agents dashboard panel open or closed.
 - **Middle-Click (Bar Badge)**: Cycle to the next enabled AI agent module.
 - **Scroll Wheel (Bar Badge)**: Cycle forward/backward through enabled modules.
+- **Sync Nodes Button (Panel Header / Active Nodes Card)**: Trigger an immediate multi-node telemetry sync across all 5 mesh hosts (`james-mbp1`, `controller`, `gpu01`, `netctl1`, `netctl2`).
 - **Gear Icon (Panel Header)**: Toggle the in-panel modular Settings Drawer.
+- **3-Way Environment Profile Classification & Quick Launchers**:
+  - **Work (`~/Work`, Clover/Fiserv repos)** — Classified under `work` (`agy` / `AGY · Clover`, `fiserv-claude`). Launch via **`SUPER + ALT + A`**, `omarchy-agent-work`, `omarchy-agent`, `agy-clover`, or the **Work (`~/Work`)** chip in the panel.
+  - **Census (`~/projects/census-ai-ops`)** — Classified under `census` (`agy-census` / `AGY · Census`). Launch via **`SUPER + ALT + C`**, `omarchy-agent-census`, `agy-census`, or the **Census (`CSVD`)** chip in the panel.
+  - **Personal / Homelab (`~/projects/controller-ai-ops`, homelab repos)** — Classified under `personal` (`agy-personal` / `AGY · Personal`, `claude`). Launch via **`SUPER + ALT + H`**, `omarchy-agent-controller`, `agy-personal`, or the **Homelab (`Ops`)** chip in the panel.
+- **Zero-Idle-CPU Incremental Telemetry Cache**:
+  - `bin/collector.py` uses an incremental `st_mtime_ns + st_size` per-file cache (`~/.cache/omarchy/agent-usage-transcript-cache-v4.json`), cutting warm collector refreshes to `<0.2s` with `0%` background CPU between 120s timer ticks.
 - **IPC Commands**:
   - `omarchy-shell nertwork.agents toggle` — Toggle panel visibility.
   - `omarchy-shell nertwork.agents refresh` — Trigger an immediate collector refresh.

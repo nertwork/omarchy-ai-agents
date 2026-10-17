@@ -29,7 +29,22 @@ CLAUDE_COSTS = {
     "claude-haiku-4-5": (0.80, 4.0, 0.08, 1.00),
 }
 
-DEFAULT_WORK_PROJECT_PATTERNS: tuple[str, ...] = ()
+DEFAULT_WORK_PROJECT_PATTERNS: tuple[str, ...] = (
+    "*Work",
+    "*-Work",
+    "*Work-*",
+    "*work*",
+    "*clover*",
+    "*fiserv*",
+    "*snv-rtr*",
+    "*proxmox*",
+    "*netctl*",
+    "*nit-dns*",
+    "*librenms*",
+    "*network-ansible*",
+    "*poc_quota_alerts*",
+    "*enc*",
+)
 
 
 def _norm_model(m: str | None) -> str:
@@ -97,11 +112,12 @@ def resolve_claude_meta(settings: dict | None = None) -> dict:
     work_config_dir = str(work_cfg.get("configDir") or "~/.claude-work")
     work_dirs = list(work_cfg.get("dirs") or [work_config_dir])
     pers_dirs = list(pers_cfg.get("dirs") or ["~/.claude"])
-    work_patterns = list(
-        work_cfg.get("projectPatterns")
-        or work_cfg.get("project_patterns")
-        or DEFAULT_WORK_PROJECT_PATTERNS
-    )
+    work_patterns = list(dict.fromkeys(
+        list(DEFAULT_WORK_PROJECT_PATTERNS)
+        + list(work_cfg.get("projectPatterns") or [])
+        + list(work_cfg.get("project_patterns") or [])
+        + list(work_cfg.get("sharedProjectGlobs") or [])
+    ))
 
     return {
         "work_label": str(work_cfg.get("label") or "Claude Work"),
@@ -359,7 +375,7 @@ def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> 
     if cache_p.exists():
         try:
             raw = json.loads(cache_p.read_text(encoding="utf-8"))
-            if raw.get("__schema__") == 3:
+            if raw.get("__schema__") == 5:
                 cache = raw.get("files", {})
         except Exception:
             cache = {}
@@ -400,7 +416,7 @@ def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> 
 
     if dirty or len(new_cache) != len(cache):
         try:
-            cache_p.write_text(json.dumps({"__schema__": 3, "files": new_cache}), encoding="utf-8")
+            cache_p.write_text(json.dumps({"__schema__": 5, "files": new_cache}), encoding="utf-8")
             cache_p.chmod(0o600)
         except Exception:
             pass

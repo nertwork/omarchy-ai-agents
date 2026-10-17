@@ -213,6 +213,8 @@ def load_modular_settings() -> dict:
 
 
 CLOVER_WORKSPACES = {
+    "Work",
+    "work",
     "clover-ai-ops",
     "snv-rtr-ops",
     "corp-proxmox",
@@ -224,16 +226,36 @@ CLOVER_WORKSPACES = {
     "enc",
 }
 
+CENSUS_WORKSPACES = {
+    "census-ai-ops",
+    "census",
+    "csvd",
+    "iebcloud",
+}
+
+
+@functools.lru_cache(maxsize=256)
+def _is_census_workspace(ws: str | None) -> bool:
+    if not ws:
+        return False
+    w = ws.strip()
+    if w in CENSUS_WORKSPACES:
+        return True
+    wl = w.lower()
+    return any(k in wl for k in ("census", "csvd", "iebcloud"))
+
 
 @functools.lru_cache(maxsize=256)
 def _is_clover_workspace(ws: str | None) -> bool:
     if not ws:
         return False
     w = ws.strip()
+    if _is_census_workspace(w):
+        return False
     if w in CLOVER_WORKSPACES:
         return True
     wl = w.lower()
-    return any(k in wl for k in ("clover", "fiserv", "snv", "netctl"))
+    return any(k in wl for k in ("clover", "fiserv", "snv", "netctl", "work"))
 
 
 def is_agy_split_enabled(settings: dict | None = None) -> bool:
@@ -245,8 +267,10 @@ def is_agy_split_enabled(settings: dict | None = None) -> bool:
             return True
         if "agy-personal" in provs and bool(provs["agy-personal"].get("enabled", False)):
             return True
+        if "agy-census" in provs and bool(provs["agy-census"].get("enabled", False)):
+            return True
     enabled_list = settings.get("enabledAgents") or settings.get("enabledProviders") or []
-    if isinstance(enabled_list, list) and any(k in enabled_list for k in ("agy-sandbox", "agy-personal")):
+    if isinstance(enabled_list, list) and any(k in enabled_list for k in ("agy-sandbox", "agy-personal", "agy-census")):
         return True
     return False
 
@@ -262,6 +286,7 @@ def resolve_agy_meta(settings: dict | None = None) -> dict:
     agy_p = {**(profs.get("agy") or {}), **(provs.get("agy") or {})}
     sb_p = {**(profs.get("agy-sandbox") or {}), **(provs.get("agy-sandbox") or {})}
     pers_p = {**(profs.get("agy-personal") or {}), **(provs.get("agy-personal") or {})}
+    cens_p = {**(profs.get("agy-census") or {}), **(provs.get("agy-census") or {})}
 
     def _read_dir_proj(d: Path) -> str:
         sp = d / "settings.json"
@@ -281,25 +306,34 @@ def resolve_agy_meta(settings: dict | None = None) -> dict:
         sb_proj = _read_dir_proj(Path.home() / ".gemini/antigravity-cli-sandbox") or "clover-sandbox"
 
     pers_proj = str(pers_p.get("gcpProject") or (pers_p.get("projects") or [""])[0] or pers_p.get("profile") or "").strip()
-    if pers_proj in ("", "default", "personal", "all"):
-        pers_proj = "personal-homelab-census"
+    if pers_proj in ("", "default", "personal", "all", "personal-homelab-census"):
+        pers_proj = "personal-homelab"
+
+    cens_proj = str(cens_p.get("gcpProject") or (cens_p.get("projects") or [""])[0] or cens_p.get("profile") or "").strip()
+    if cens_proj in ("", "default", "census", "all"):
+        cens_proj = "census-ai-ops"
 
     _res_meta = {
         "primary_proj": pri_proj,
         "sandbox_proj": sb_proj,
         "personal_proj": pers_proj,
+        "census_proj": cens_proj,
         "primary_label": str(agy_p.get("label") or "AGY Corp"),
         "primary_short": str(agy_p.get("shortLabel") or "AGY · Corp"),
-        "primary_display": str(agy_p.get("displayName") or "Antigravity (Clover / Fiserv Corp)"),
+        "primary_display": str(agy_p.get("displayName") or "Antigravity · Clover Corp"),
         "primary_badge": str(agy_p.get("badge") or pri_proj),
         "sandbox_label": str(sb_p.get("label") or "AGY Sandbox"),
         "sandbox_short": str(sb_p.get("shortLabel") or "AGY · Sandbox"),
-        "sandbox_display": str(sb_p.get("displayName") or "Antigravity (Clover / Fiserv Sandbox)"),
+        "sandbox_display": str(sb_p.get("displayName") or "Antigravity · Sandbox"),
         "sandbox_badge": str(sb_p.get("badge") or sb_proj),
         "personal_label": str(pers_p.get("label") or "AGY Personal"),
         "personal_short": str(pers_p.get("shortLabel") or "AGY · Personal"),
-        "personal_display": str(pers_p.get("displayName") or "Antigravity (Personal / Homelab / Census)"),
+        "personal_display": str(pers_p.get("displayName") or "Antigravity · Personal"),
         "personal_badge": str(pers_p.get("badge") or "personal"),
+        "census_label": str(cens_p.get("label") or "AGY Census"),
+        "census_short": str(cens_p.get("shortLabel") or "AGY · Census"),
+        "census_display": str(cens_p.get("displayName") or "Antigravity · Census"),
+        "census_badge": str(cens_p.get("badge") or "census"),
     }
     if _AGY_META_CACHE is None:
         _AGY_META_CACHE = dict(_res_meta)
@@ -743,7 +777,7 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
         try:
             raw_sc = json.loads(sc_p.read_text(encoding="utf-8"))
             schema_v = int(raw_sc.get("__schema__", 0) or 0)
-            if schema_v in (5, 6):
+            if schema_v in (5, 6, 7):
                 sc = raw_sc.get("sessions", {})
                 if schema_v < 6:
                     for _entry in sc.values():
@@ -935,15 +969,18 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                 d["ws"] = tree_ws[r]
                 dirty = True
 
-        # Classify session into profile_id: agy-personal, agy (Corp), or agy-sandbox
+        # Classify session into profile_id: agy-census, agy (Corp/Work), agy-sandbox, or agy-personal
         c_proj = d.get("proj") or pri_p
         c_ws = d.get("ws") or "global"
         c_hosts = set(d.get("hosts") or [])
-        is_clover = _is_clover_workspace(c_ws) or (bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"}))
-        if d.get("personal_dir"):
-            prof_id = "agy-personal"
+        is_census = _is_census_workspace(c_ws)
+        is_clover = (not is_census) and (_is_clover_workspace(c_ws) or (bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"})))
+        if is_census:
+            prof_id = "agy-census"
         elif is_clover:
             prof_id = "agy-sandbox" if c_proj == sb_p else "agy"
+        elif d.get("personal_dir"):
+            prof_id = "agy-personal"
         else:
             prof_id = "agy-personal"
             if c_proj == sb_p and not d.get("dedicated"):
@@ -956,7 +993,7 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
 
     if dirty or migrated_schema or len(new_sc) != len(sc):
         try:
-            sc_p.write_text(json.dumps({"__schema__": 6, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
+            sc_p.write_text(json.dumps({"__schema__": 7, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
         except Exception:
             pass
 
@@ -1025,18 +1062,14 @@ def _build_agy_record(
         ws = d.get("ws") or "global"
         c_hosts = d.get("hosts") or ["james-mbp1"]
         c_hosts_set = set(c_hosts)
-        if len(c_hosts_set) == 1:
-            primary_host = next(iter(c_hosts_set))
-        elif c_hosts_set.issubset({"netctl1", "netctl2"}):
-            primary_host = "netctl1" if "netctl1" in c_hosts_set else "netctl2"
-        elif ws in ("controller-ai-ops", "ai-ops", "smarthome-ai-ops") and "controller" in c_hosts_set:
-            primary_host = "james-mbp1 + controller"
-        elif _is_clover_workspace(ws) and ("netctl1" in c_hosts_set or "netctl2" in c_hosts_set):
-            primary_host = "james-mbp1 + netctl1/2"
-        elif "james-mbp1" in c_hosts_set:
-            primary_host = "james-mbp1"
+        if record_id in ("agy-personal", "agy-census"):
+            mesh_allowed = {"james-mbp1", "controller", "gpu01"}
+        elif record_id in ("agy", "agy-sandbox"):
+            mesh_allowed = {"james-mbp1", "netctl1", "netctl2"}
         else:
-            primary_host = c_hosts[0]
+            mesh_allowed = {"james-mbp1", "controller", "gpu01", "netctl1", "netctl2"}
+        scoped_hosts = sorted(c_hosts_set & mesh_allowed) or ["james-mbp1"]
+        primary_host = "james-mbp1" if "james-mbp1" in scoped_hosts else scoped_hosts[0]
 
         c_tok = 0
         c_cost = 0.0
@@ -1044,7 +1077,7 @@ def _build_agy_record(
         c_in_30d = False
 
         ws_entry = ws_stats[ws]
-        host_entry = host_stats[primary_host]
+        host_entries = [host_stats[h] for h in scoped_hosts]
         c_in_7d = False
 
         for ev in d.get("events", []):
@@ -1061,7 +1094,8 @@ def _build_agy_record(
                     prompts_30d += p_cnt
                     ws_entry["prompts"] += p_cnt
                     sessions_by_day[day].add(cid)
-                    host_entry["prompts30d"] += p_cnt
+                    for _he in host_entries:
+                        _he["prompts30d"] += p_cnt
                     if day > ws_entry["last"]:
                         ws_entry["last"] = day
                     if day >= cut_7d:
@@ -1090,23 +1124,27 @@ def _build_agy_record(
                     ws_entry["tokens"] += tot
                     ws_entry["costUsd"] += ev_cost
                     sessions_by_day[day].add(cid)
-                    host_entry["tokens30d"] += tot
-                    host_entry["costUsd30d"] += ev_cost
+                    for _he in host_entries:
+                        _he["tokens30d"] += tot
+                        _he["costUsd30d"] += ev_cost
                     if day > ws_entry["last"]:
                         ws_entry["last"] = day
                     if day >= cut_7d:
                         c_in_7d = True
                         ws_entry["costUsd7d"] += ev_cost
-                        host_entry["costUsd7d"] += ev_cost
+                        for _he in host_entries:
+                            _he["costUsd7d"] += ev_cost
                     if day == today_s:
                         ws_entry["costUsdToday"] += ev_cost
-                        host_entry["costUsdToday"] += ev_cost
+                        for _he in host_entries:
+                            _he["costUsdToday"] += ev_cost
                         if is_sub:
                             today_sub_tokens += tot
 
         if c_in_30d:
             ws_entry["sessions"].add(cid)
-            host_entry["sessions30d"].add(cid)
+            for _he in host_entries:
+                _he["sessions30d"].add(cid)
             if c_in_7d:
                 sessions_7d.add(cid)
             if is_sub:
@@ -1186,7 +1224,7 @@ def _build_agy_record(
 
     model_usage = {}
     model_quotas = []
-    for m, (it, ot, ct, mcost) in sorted(personal_mod.items(), key=lambda x: -(x[1][0] + x[1][1] + x[1][2])):
+    for m, (it, ot, ct, mcost) in sorted(personal_mod.items(), key=lambda x: (-x[1][3], -(x[1][0] + x[1][1] + x[1][2]))):
         tot = it + ot + ct
         if tot <= 0:
             continue
@@ -1253,7 +1291,7 @@ def _build_agy_record(
     ws_list = [
         {
             "workspace": k,
-            "category": "work" if _is_clover_workspace(k) else "personal",
+            "category": "census" if _is_census_workspace(k) else ("work" if _is_clover_workspace(k) else "personal"),
             "tokens": v["tokens"],
             "costUsd": round(v["costUsd"], 2),
             "costUsd7d": round(v["costUsd7d"], 2),
@@ -1265,9 +1303,21 @@ def _build_agy_record(
         for k, v in sorted(ws_stats.items(), key=lambda x: -x[1]["costUsd"])[:14]
     ]
 
+    last_sync_file = Path.home() / ".cache/omarchy/remote-sessions/hosts/.last_sync"
+    last_sync_iso = ""
+    if last_sync_file.exists():
+        try:
+            last_sync_iso = datetime.fromtimestamp(int(last_sync_file.read_text().strip()), tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+
+    _host_order = {"james-mbp1": 0, "controller": 1, "gpu01": 2, "netctl1": 3, "netctl2": 4}
     hosts_list = [
         {
             "host": k,
+            "role": "local" if k == "james-mbp1" else "mesh-sync",
+            "status": "local" if k == "james-mbp1" else "synced",
+            "lastSyncAt": now.astimezone(timezone.utc).isoformat() if k == "james-mbp1" else last_sync_iso,
             "tokens30d": v["tokens30d"],
             "costUsd30d": round(v["costUsd30d"], 2),
             "costUsd7d": round(v["costUsd7d"], 2),
@@ -1275,7 +1325,7 @@ def _build_agy_record(
             "prompts30d": v["prompts30d"],
             "sessions30d": len(v["sessions30d"]),
         }
-        for k, v in sorted(host_stats.items(), key=lambda x: -x[1]["costUsd30d"])
+        for k, v in sorted(host_stats.items(), key=lambda x: (_host_order.get(x[0], 99), -x[1]["costUsd30d"]))
     ]
 
     st_p = (
@@ -1283,7 +1333,7 @@ def _build_agy_record(
         if record_id == "agy-sandbox"
         else (
             Path.home() / ".gemini/antigravity-cli-personal/settings.json"
-            if record_id == "agy-personal"
+            if record_id in ("agy-personal", "agy-census")
             else Path.home() / ".gemini/antigravity-cli/settings.json"
         )
     )
@@ -1305,9 +1355,13 @@ def _build_agy_record(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if record_id == "agy-personal":
-        tier_prefix = "Personal / Homelab / Census"
+        tier_prefix = "Personal / Homelab"
         auth_mode_str = "Google AI / Personal Profile"
-        auth_help_str = "Personal, Homelab & Census usage across james-mbp1, controller, and gpu01 (`agy-personal`)."
+        auth_help_str = "Personal & Homelab usage across james-mbp1, controller, and gpu01 (`agy-personal`)."
+    elif record_id == "agy-census":
+        tier_prefix = "Census / CSVD / IEBCloud"
+        auth_mode_str = "Census Profile (census-ai-ops)"
+        auth_help_str = "Census Bureau (CSVD / IEBCloud) usage in census-ai-ops (`agy-census`)."
     elif record_id == "agy-sandbox":
         tier_prefix = f"Vertex AI ({badge})"
         auth_mode_str = "Vertex AI Sandbox"
@@ -1583,10 +1637,12 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
     sb_proj = meta["sandbox_proj"]
     pri_proj = meta["primary_proj"]
     pers_proj = meta["personal_proj"]
+    cens_proj = meta["census_proj"]
 
     profiles_summary_list = []
     for pid, pproj, plabel in [
-        ("agy-personal", pers_proj, "Personal / Homelab / Census"),
+        ("agy-personal", pers_proj, "Personal / Homelab"),
+        ("agy-census", cens_proj, "Census (census-ai-ops)"),
         ("agy", pri_proj, "Clover / Fiserv Corp"),
         ("agy-sandbox", sb_proj, "Clover / Fiserv Sandbox"),
     ]:
@@ -1613,6 +1669,9 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
     pers_cost_30d = round(prof_stats["agy-personal"]["cost30d"], 2)
     pers_cost_7d = round(prof_stats["agy-personal"]["cost7d"], 2)
     pers_cost_today = round(prof_stats["agy-personal"]["costToday"], 2)
+    cens_cost_30d = round(prof_stats["agy-census"]["cost30d"], 2)
+    cens_cost_7d = round(prof_stats["agy-census"]["cost7d"], 2)
+    cens_cost_today = round(prof_stats["agy-census"]["costToday"], 2)
 
     family_summary = {
         "family": "agy",
@@ -1632,6 +1691,9 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         "personalCostUsd30d": pers_cost_30d,
         "personalCostUsd7d": pers_cost_7d,
         "personalCostUsdToday": pers_cost_today,
+        "censusCostUsd30d": cens_cost_30d,
+        "censusCostUsd7d": cens_cost_7d,
+        "censusCostUsdToday": cens_cost_today,
         "prompts30d": sum(pb["localPrompts30d"] for pb in all_proj_breakdown),
         "promptsToday": sum(pb["localPromptsToday"] for pb in all_proj_breakdown),
         "sessions30d": sum(pb["localSessions30d"] for pb in all_proj_breakdown),
@@ -1657,6 +1719,21 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         family_summary=family_summary,
         aggregated=False,
         target_profile_ids={"agy-personal"},
+    )
+    rec_census = _build_agy_record(
+        record_id="agy-census",
+        profile_name=meta["census_label"],
+        display_name=meta["census_display"],
+        short_label=meta["census_short"],
+        badge=meta["census_badge"],
+        target_projects=corp_projects,
+        sessions_map=sessions_map,
+        all_projects=projects,
+        cloud=cloud,
+        all_proj_breakdown=all_proj_breakdown,
+        family_summary=family_summary,
+        aggregated=False,
+        target_profile_ids={"agy-census"},
     )
     rec_corp = _build_agy_record(
         record_id="agy",
@@ -1713,6 +1790,7 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         "agy-corp": rec_corp,
         "agy-sandbox": rec_sandbox,
         "agy-personal": rec_personal,
+        "agy-census": rec_census,
         "all": rec_all,
         "summary": family_summary,
     }
@@ -1725,6 +1803,8 @@ def collect_agy_data(force: bool = False, profile: str | None = None, split_prof
     profiles = collect_agy_profiles(force=force, split_profiles=split_profiles)
     if profile in ("agy-personal", meta["personal_proj"], "personal"):
         return profiles["agy-personal"]
+    if profile in ("agy-census", meta["census_proj"], "census"):
+        return profiles["agy-census"]
     if profile in ("agy-sandbox", meta["sandbox_proj"], "sandbox"):
         return profiles["agy-sandbox"]
     if profile in ("agy-corp", meta["primary_proj"], "primary", "corp"):

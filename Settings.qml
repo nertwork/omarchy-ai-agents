@@ -222,8 +222,8 @@ Item {
     }
 
     SectionCard {
-      title: "AGY MODULES (GOOGLE CLOUD / VERTEX AI)"
-      subtitle: "Enable one or both Antigravity GCP billing/quota projects."
+      title: "AGY MODULES (PERSONAL, CENSUS & CLOVER VERTEX AI)"
+      subtitle: "Enable Antigravity profiles across Personal (Homelab), Census (CSVD), and Clover (Work / Sandbox)."
 
       Repeater {
         model: root.usage ? root.usage.providersByGroup("agy") : []

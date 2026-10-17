@@ -49,7 +49,7 @@
         "label": "AGY Corp"
       },
       "agy-sandbox": {
-        "enabled": false,
+        "enabled": true,
         "profile": "sandbox",
         "label": "AGY Sandbox"
       },
@@ -98,12 +98,20 @@
       "fireworks": {
         "enabled": false,
         "label": "Fireworks"
+      },
+      "agy-census": {
+        "enabled": true,
+        "profile": "census",
+        "label": "AGY Census"
       }
     },
     "enabledAgents": [
       "agy-personal",
+      "agy-census",
       "agy",
-      "claude"
+      "agy-sandbox",
+      "claude",
+      "fiserv-claude"
     ]
   },
   "barWidget": {
@@ -118,8 +126,11 @@
       "terminalCommand": "",
       "enabledAgents": [
         "agy-personal",
+        "agy-census",
         "agy",
-        "claude"
+        "agy-sandbox",
+        "claude",
+        "fiserv-claude"
       ],
       "providers": {
         "agy-personal": {
@@ -133,7 +144,7 @@
           "label": "AGY Corp"
         },
         "agy-sandbox": {
-          "enabled": false,
+          "enabled": true,
           "profile": "sandbox",
           "label": "AGY Sandbox"
         },
@@ -182,6 +193,11 @@
         "fireworks": {
           "enabled": false,
           "label": "Fireworks"
+        },
+        "agy-census": {
+          "enabled": true,
+          "profile": "census",
+          "label": "AGY Census"
         }
       }
     },

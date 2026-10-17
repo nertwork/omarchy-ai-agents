@@ -206,6 +206,9 @@ def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claud
     pers_30d = round(float(agy_sum.get("personalCostUsd30d", 0.0)) + float(pers_c_prof.get("costUsd30d", 0.0)), 2)
     pers_7d = round(float(agy_sum.get("personalCostUsd7d", 0.0)) + float(pers_c_prof.get("costUsd7d", 0.0)), 2)
     pers_today = round(float(agy_sum.get("personalCostUsdToday", 0.0)) + float(pers_c_prof.get("costUsdToday", 0.0)), 2)
+    cens_30d = round(float(agy_sum.get("censusCostUsd30d", 0.0)), 2)
+    cens_7d = round(float(agy_sum.get("censusCostUsd7d", 0.0)), 2)
+    cens_today = round(float(agy_sum.get("censusCostUsdToday", 0.0)), 2)
 
     return {
         "schemaVersion": 2,
@@ -223,6 +226,9 @@ def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claud
             "personalCostUsd30d": pers_30d,
             "personalCostUsd7d": pers_7d,
             "personalCostUsdToday": pers_today,
+            "censusCostUsd30d": cens_30d,
+            "censusCostUsd7d": cens_7d,
+            "censusCostUsdToday": cens_today,
         },
         "groups": {
             "agy": agy_sum,
@@ -278,6 +284,8 @@ def collect_agy_and_claude(
                 write_state_file("agy", rec_agy)
                 rec_pers = _enrich_record_with_summary(agy_profiles["agy-personal"], agy_sum, grand_summary)
                 write_state_file("agy-personal", rec_pers)
+                rec_cens = _enrich_record_with_summary(agy_profiles["agy-census"], agy_sum, grand_summary)
+                write_state_file("agy-census", rec_cens)
             if want_agy_sandbox is not False:
                 rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
                 write_state_file("agy-sandbox", rec_sb)
@@ -724,7 +732,7 @@ def main():
 
     targets = [a.lower() for a in args.agents] if args.agents else ["agy", "claude", "codex", "grok", "copilot"]
 
-    want_agy = any(t in ("agy", "agy-personal", "all") for t in targets)
+    want_agy = any(t in ("agy", "agy-personal", "agy-census", "all") for t in targets)
     want_agy_sb = True if "agy-sandbox" in targets else (None if want_agy else False)
     want_claude = any(t in ("claude", "all") for t in targets)
     want_fiserv = True if "fiserv-claude" in targets else (None if want_claude else False)
@@ -740,7 +748,7 @@ def main():
         )
 
     for target in targets:
-        if target in ("agy", "agy-personal", "agy-sandbox", "claude", "fiserv-claude", "all"):
+        if target in ("agy", "agy-personal", "agy-census", "agy-sandbox", "claude", "fiserv-claude", "all"):
             continue
         elif target == "codex":
             collect_codex(force=args.force and ("codex" in args.agents))

@@ -31,22 +31,37 @@ Item {
       id: "agy-personal",
       label: "AGY Personal",
       shortLabel: "AGY · Personal",
-      displayName: "Antigravity (Personal / Homelab / Census)",
+      displayName: "Antigravity · Personal",
       badge: "personal",
       family: "agy",
       familyLabel: "AGY",
       profile: "personal",
       icon: "agy",
       command: "agy-personal",
-      description: "Antigravity CLI · Personal / Homelab / Census (james-mbp1, controller, gpu01)",
+      description: "Antigravity CLI · Personal / Homelab (james-mbp1, controller, gpu01)",
       order: 9,
+      defaultEnabled: true
+    },
+    "agy-census": {
+      id: "agy-census",
+      label: "AGY Census",
+      shortLabel: "AGY · Census",
+      displayName: "Antigravity · Census",
+      badge: "census",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "census",
+      icon: "agy",
+      command: "agy-census",
+      description: "Antigravity CLI · Census / CSVD / IEBCloud (census-ai-ops)",
+      order: 9.5,
       defaultEnabled: true
     },
     "agy": {
       id: "agy",
       label: "AGY Corp",
       shortLabel: "AGY · Corp",
-      displayName: "Antigravity (Clover Corp · clover-corp-ai)",
+      displayName: "Antigravity · Clover Corp",
       badge: "corp",
       family: "agy",
       familyLabel: "AGY",
@@ -61,7 +76,7 @@ Item {
       id: "agy-sandbox",
       label: "AGY Sandbox",
       shortLabel: "AGY · Sandbox",
-      displayName: "Antigravity (Sandbox)",
+      displayName: "Antigravity · Sandbox",
       badge: "sandbox",
       family: "agy",
       familyLabel: "AGY",
@@ -241,6 +256,7 @@ Item {
 
   readonly property var orderedProviderIds: [
     "agy-personal",
+    "agy-census",
     "agy",
     "agy-sandbox",
     "fiserv-claude",
@@ -665,11 +681,18 @@ Item {
   readonly property var workVsPersonalTotals: {
     var wToday = 0, w7d = 0, w30d = 0, wTok30d = 0
     var pToday = 0, p7d = 0, p30d = 0, pTok30d = 0
+    var cToday = 0, c7d = 0, c30d = 0, cTok30d = 0
     for (var i = 0; i < enabledProviders.length; i++) {
       var p = enabledProviders[i]
       if (!p) continue
-      var isPersonal = (p.id === "agy-personal" || p.id === "claude" || p.profile === "personal")
-      if (isPersonal) {
+      var isCensus = (p.id === "agy-census" || p.profile === "census" || p.badge === "census")
+      var isPersonal = (!isCensus && (p.id === "agy-personal" || p.id === "claude" || p.profile === "personal"))
+      if (isCensus) {
+        cToday += Number(p.todayCostUsd || 0)
+        c7d += Number(p.sevenDayCostUsd || 0)
+        c30d += Number(p.thirtyDayCostUsd || 0)
+        cTok30d += Number(p.thirtyDayTokens || 0)
+      } else if (isPersonal) {
         pToday += Number(p.todayCostUsd || 0)
         p7d += Number(p.sevenDayCostUsd || 0)
         p30d += Number(p.thirtyDayCostUsd || 0)
@@ -689,7 +712,11 @@ Item {
       personalTodayCostUsd: Math.round(pToday * 100) / 100,
       personal7dCostUsd: Math.round(p7d * 100) / 100,
       personal30dCostUsd: Math.round(p30d * 100) / 100,
-      personal30dTokens: Math.round(pTok30d)
+      personal30dTokens: Math.round(pTok30d),
+      censusTodayCostUsd: Math.round(cToday * 100) / 100,
+      census7dCostUsd: Math.round(c7d * 100) / 100,
+      census30dCostUsd: Math.round(c30d * 100) / 100,
+      census30dTokens: Math.round(cTok30d)
     }
   }
 
@@ -770,6 +797,22 @@ Item {
         wsMap[wk].costUsd = Math.round((wsMap[wk].costUsd + Number(wr.costUsd || 0)) * 100) / 100
       }
 
+      var canonicalHosts = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
+      for (var ch = 0; ch < canonicalHosts.length; ch++) {
+        var chk = canonicalHosts[ch]
+        if (!hostMap[chk]) {
+          hostMap[chk] = {
+            host: chk,
+            role: chk === "james-mbp1" ? "local" : "mesh-sync",
+            status: chk === "james-mbp1" ? "local" : "synced",
+            lastSyncAt: "",
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+      }
       var hList = p.hostsBreakdown || []
       for (var h = 0; h < hList.length; h++) {
         var hr = hList[h]
@@ -778,6 +821,9 @@ Item {
         if (!hostMap[hk]) {
           hostMap[hk] = {
             host: hk,
+            role: String(hr.role || (hk === "james-mbp1" ? "local" : "mesh")),
+            status: String(hr.status || "online"),
+            lastSyncAt: String(hr.lastSyncAt || ""),
             sessions: 0,
             prompts: 0,
             tokens: 0,
@@ -853,6 +899,7 @@ Item {
 
     return {
       id: "combined",
+      label: "All Enabled Agents",
       name: "All Enabled Agents",
       shortLabel: "All Modules",
       badge: enabledProviders.length + " modules",
@@ -888,6 +935,8 @@ Item {
       sharedOrgTokens30d: 0
     }
   }
+
+  readonly property var meshHostsBreakdown: combinedProvider && combinedProvider.hostsBreakdown ? combinedProvider.hostsBreakdown : []
 
   readonly property var currentProvider: {
     if (showCombinedView && enabledProviders.length > 1) {
@@ -1001,6 +1050,7 @@ Item {
       + " · 7d " + root.formatUsd(root.aggregatedTotal7dCost, false)
       + " · 30d " + root.formatUsd(root.aggregatedTotal30dCost, false)
       + "  [Work 30d: " + root.formatUsd(root.workVsPersonalTotals.work30dCostUsd, false)
+      + " · Census 30d: " + root.formatUsd(root.workVsPersonalTotals.census30dCostUsd, false)
       + " · Personal 30d: " + root.formatUsd(root.workVsPersonalTotals.personal30dCostUsd, false) + "]"
     if (root.currentProvider) {
       return root.currentProvider.shortLabel + " (" + root.formatUsd(root.currentProvider.thirtyDayCostUsd, false) + " 30d)  |  " + totalLine
@@ -1291,6 +1341,7 @@ Item {
     if (!raw || typeof raw !== "object") {
       return {
         id: key,
+        label: meta.label,
         name: meta.label,
         shortLabel: meta.shortLabel,
         displayName: meta.displayName,
@@ -1429,6 +1480,7 @@ Item {
 
     return {
       id: key,
+      label: meta.label,
       name: meta.label,
       shortLabel: meta.shortLabel,
       displayName: meta.displayName,
@@ -1581,6 +1633,7 @@ Item {
           }
         }
         root.discoveredFileIds = ids
+        root.reloadFiles()
       }
     }
   }
@@ -1594,6 +1647,7 @@ Item {
       root.refreshing = false
       root.lastRefreshEpochMs = Date.now()
       root.rescanFiles()
+      root.reloadFiles()
 
       if (root.refreshQueued) {
         var nextForce = root.refreshQueuedForce

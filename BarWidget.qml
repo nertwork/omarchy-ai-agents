@@ -58,7 +58,8 @@ Ui.BarWidget {
     property real aggregatedTotal7dCost: 0
     property real aggregatedTotal30dCost: 0
     property real aggregatedTotal30dTokens: 0
-    property var workVsPersonalTotals: ({ personalCost30d: 0, personalTokens30d: 0, personalCount: 0, workCost30d: 0, workTokens30d: 0, workCount: 0 })
+    property var workVsPersonalTotals: ({ personalTodayCostUsd: 0, personal7dCostUsd: 0, personal30dCostUsd: 0, personal30dTokens: 0, censusTodayCostUsd: 0, census7dCostUsd: 0, census30dCostUsd: 0, census30dTokens: 0, workTodayCostUsd: 0, work7dCostUsd: 0, work30dCostUsd: 0, work30dTokens: 0 })
+    property var meshHostsBreakdown: []
     property var agyFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
     property var claudeFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
     signal requestOpen()

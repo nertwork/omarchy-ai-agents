@@ -69,7 +69,8 @@ Ui.Panel {
     property real aggregatedTotal7dCost: 0
     property real aggregatedTotal30dCost: 0
     property real aggregatedTotal30dTokens: 0
-    property var workVsPersonalTotals: ({ personalCost30d: 0, personalTokens30d: 0, personalCount: 0, workCost30d: 0, workTokens30d: 0, workCount: 0 })
+    property var workVsPersonalTotals: ({ personalTodayCostUsd: 0, personal7dCostUsd: 0, personal30dCostUsd: 0, personal30dTokens: 0, censusTodayCostUsd: 0, census7dCostUsd: 0, census30dCostUsd: 0, census30dTokens: 0, workTodayCostUsd: 0, work7dCostUsd: 0, work30dCostUsd: 0, work30dTokens: 0 })
+    property var meshHostsBreakdown: []
     property var agyFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
     property var claudeFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
     signal requestOpen()
@@ -105,7 +106,58 @@ Ui.Panel {
 
   property bool showSettings: false
   readonly property var activeProvider: usage.currentProvider
+  readonly property var currentModule: activeProvider
   readonly property bool hasVisibleAgents: usage.enabledProviders.length > 0
+  readonly property real availableCardHeight: panel.availableCardHeight > 0
+    ? panel.availableCardHeight
+    : Style.space(960)
+
+  readonly property var activeNodesBreakdown: {
+    var map = {}
+    var meshList = (usage && usage.meshHostsBreakdown instanceof Array) ? usage.meshHostsBreakdown : []
+    for (var i = 0; i < meshList.length; i++) {
+      var mh = meshList[i]
+      if (mh && mh.host) {
+        map[String(mh.host)] = {
+          host: String(mh.host),
+          role: String(mh.role || (mh.host === "james-mbp1" ? "local" : "mesh-sync")),
+          status: String(mh.status || "synced"),
+          costUsd: Number(mh.costUsd !== undefined ? mh.costUsd : (mh.costUsd30d || 0)),
+          sessions: Number(mh.sessions !== undefined ? mh.sessions : (mh.sessions30d || 0)),
+          tokens: Number(mh.tokens !== undefined ? mh.tokens : (mh.tokens30d || 0))
+        }
+      }
+    }
+    var pList = (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array)
+      ? root.activeProvider.hostsBreakdown
+      : []
+    if (meshList.length === 0) {
+      for (var j = 0; j < pList.length; j++) {
+        var ph = pList[j]
+        if (ph && ph.host) {
+          map[String(ph.host)] = {
+            host: String(ph.host),
+            role: String(ph.role || (ph.host === "james-mbp1" ? "local" : "mesh-sync")),
+            status: String(ph.status || "synced"),
+            costUsd: Number(ph.costUsd !== undefined ? ph.costUsd : (ph.costUsd30d || 0)),
+            sessions: Number(ph.sessions !== undefined ? ph.sessions : (ph.sessions30d || 0)),
+            tokens: Number(ph.tokens !== undefined ? ph.tokens : (ph.tokens30d || 0))
+          }
+        }
+      }
+    }
+    var order = ["controller", "gpu01", "james-mbp1", "netctl1", "netctl2"]
+    var out = []
+    for (var k = 0; k < order.length; k++) {
+      var hName = order[k]
+      if (map[hName]) {
+        out.push(map[hName])
+      } else {
+        out.push({ host: hName, role: hName === "james-mbp1" ? "local" : "mesh-sync", status: "synced", costUsd: 0, sessions: 0, tokens: 0 })
+      }
+    }
+    return out
+  }
 
   readonly property bool isVertical: bar ? !!bar.vertical : false
   readonly property bool shouldShowCostPill: !isVertical && usage.showBarCost && usage.barCostLabel !== ""
@@ -208,6 +260,7 @@ Ui.Panel {
 
   readonly property var availableIcons: ({
     "agy-personal": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
+    "agy-census": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "agy": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "agy-sandbox": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "claude": { dark: "assets/claude.svg", light: "assets/claude.svg" },
@@ -437,10 +490,14 @@ Ui.Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
+    readonly property real maxCardHeight: Math.min(
+      Style.space(855),
+      Math.max(Style.space(420), root.availableCardHeight - panel.verticalContentInset * 2)
+    )
     contentWidth: panel.fittedContentWidth(Style.space(560))
     contentHeight: panel.fittedContentHeight(
       Math.max(Style.space(420), mainRootColumn.implicitHeight),
-      Style.space(760)
+      maxCardHeight
     )
 
     onOpenChanged: {
@@ -478,11 +535,15 @@ Ui.Panel {
     readonly property real headerChromeHeight: (aggregateBanner.visible ? aggregateBanner.implicitHeight + Style.space(10) : 0)
       + (tabsFlick.visible ? tabsFlick.height + Style.space(10) : 0)
       + moduleHeaderCard.implicitHeight + Style.space(10)
-    readonly property real maxScrollAreaHeight: Math.max(Style.space(260), Style.space(760) - Style.space(28) - headerChromeHeight)
+    readonly property real maxScrollAreaHeight: Math.max(
+      Style.space(200),
+      maxCardHeight - panel.verticalContentInset - headerChromeHeight - Style.space(6)
+    )
 
     Column {
       id: mainRootColumn
       width: parent.width
+      height: Math.min(implicitHeight, parent.height)
       spacing: Style.space(10)
       clip: true
 
@@ -586,81 +647,55 @@ Ui.Panel {
             }
           }
 
-          // Work vs Personal Spend Split Strip
+          // 3-Way Environment Spend Split Strip (Work / Census / Personal)
           Row {
             width: parent.width
             spacing: Style.space(6)
 
-            Rectangle {
-              width: (parent.width - Style.space(6)) * 0.5
-              height: Style.space(22)
-              radius: Style.space(6)
-              clip: true
-              color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
-              border.width: 1
-              border.color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+            Repeater {
+              model: [
+                { label: "Work (30d):", today: usage.workVsPersonalTotals.workTodayCostUsd, d30: usage.workVsPersonalTotals.work30dCostUsd, accent: false },
+                { label: "Census (30d):", today: usage.workVsPersonalTotals.censusTodayCostUsd, d30: usage.workVsPersonalTotals.census30dCostUsd, accent: true },
+                { label: "Personal (30d):", today: usage.workVsPersonalTotals.personalTodayCostUsd, d30: usage.workVsPersonalTotals.personal30dCostUsd, accent: false }
+              ]
+              delegate: Rectangle {
+                required property var modelData
+                width: (parent.width - Style.space(12)) / 3
+                height: Style.space(22)
+                radius: Style.space(6)
+                clip: true
+                color: modelData.accent
+                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
+                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                border.width: 1
+                border.color: modelData.accent
+                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.24)
+                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
 
-              Row {
-                width: Math.min(implicitWidth, parent.width - Style.space(12))
-                anchors.centerIn: parent
-                spacing: Style.space(4)
+                Row {
+                  width: Math.min(implicitWidth, parent.width - Style.space(10))
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
 
-                Text {
-                  id: personalSplitLabel
-                  textFormat: Text.PlainText
-                  text: "Personal:"
-                  color: root.mutedColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
+                  Text {
+                    id: envLbl
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: root.mutedColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
 
-                Text {
-                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - personalSplitLabel.implicitWidth - parent.spacing))
-                  textFormat: Text.PlainText
-                  text: "Today " + usage.formatUsd(usage.workVsPersonalTotals.personalTodayCostUsd, false)
-                    + " · 30d " + usage.formatUsd(usage.workVsPersonalTotals.personal30dCostUsd, false)
-                  color: root.fgColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.weight: Font.Bold
-                  elide: Text.ElideRight
-                }
-              }
-            }
-
-            Rectangle {
-              width: (parent.width - Style.space(6)) * 0.5
-              height: Style.space(22)
-              radius: Style.space(6)
-              clip: true
-              color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
-              border.width: 1
-              border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
-
-              Row {
-                width: Math.min(implicitWidth, parent.width - Style.space(12))
-                anchors.centerIn: parent
-                spacing: Style.space(4)
-
-                Text {
-                  id: workSplitLabel
-                  textFormat: Text.PlainText
-                  text: "Work:"
-                  color: root.mutedColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-
-                Text {
-                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - workSplitLabel.implicitWidth - parent.spacing))
-                  textFormat: Text.PlainText
-                  text: "Today " + usage.formatUsd(usage.workVsPersonalTotals.workTodayCostUsd, false)
-                    + " · 30d " + usage.formatUsd(usage.workVsPersonalTotals.work30dCostUsd, false)
-                  color: root.fgColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.weight: Font.Bold
-                  elide: Text.ElideRight
+                  Text {
+                    width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(10) - envLbl.implicitWidth - parent.spacing))
+                    textFormat: Text.PlainText
+                    text: usage.formatUsd(modelData.d30, false)
+                    color: root.fgColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.weight: Font.Bold
+                    elide: Text.ElideRight
+                  }
                 }
               }
             }
@@ -750,6 +785,62 @@ Ui.Panel {
                   font.pixelSize: Style.font.caption
                   font.weight: Font.DemiBold
                   elide: Text.ElideRight
+                }
+              }
+            }
+          }
+
+          // Quick-Launch Workspace Chips Row (Work / Census / Homelab)
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "Launch:"
+              color: root.subtleColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.weight: Font.Bold
+            }
+
+            Repeater {
+              model: [
+                { label: "󰆍 Work (~/Work)", cmd: ["/home/jfarr/.local/bin/omarchy-agent-work"] },
+                { label: "󰆍 Census (CSVD)", cmd: ["/home/jfarr/.local/bin/omarchy-agent-census"] },
+                { label: "󰆍 Homelab (Ops)", cmd: ["/home/jfarr/.local/bin/omarchy-agent-controller"] }
+              ]
+              delegate: Rectangle {
+                required property var modelData
+                width: launchChipText.implicitWidth + Style.space(14)
+                height: Style.space(20)
+                radius: height / 2
+                color: launchChipMouse.containsMouse
+                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.20)
+                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                border.width: 1
+                border.color: launchChipMouse.containsMouse
+                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.45)
+                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
+
+                Text {
+                  id: launchChipText
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: modelData.label
+                  color: launchChipMouse.containsMouse ? root.accentColor : root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.DemiBold
+                }
+
+                MouseArea {
+                  id: launchChipMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: Quickshell.execDetached(modelData.cmd)
                 }
               }
             }
@@ -900,7 +991,7 @@ Ui.Panel {
                 width: Math.min(
                   implicitWidth,
                   Math.max(
-                    Style.space(100),
+                    Style.space(90),
                     parent.width
                       - (modBadgePill.visible ? modBadgePill.width + parent.spacing : 0)
                       - (hostCountPill.visible ? hostCountPill.width + parent.spacing : 0)
@@ -910,7 +1001,7 @@ Ui.Panel {
                 textFormat: Text.PlainText
                 text: root.showSettings
                   ? "AI Agents Settings"
-                  : (root.activeProvider ? (root.activeProvider.displayName || root.activeProvider.name) : "No Module Enabled")
+                  : (root.currentModule ? (root.currentModule.label || root.currentModule.displayName || root.currentModule.name) : "No Module Enabled")
                 color: root.fgColor
                 font.family: Style.font.family
                 font.pixelSize: Style.font.subtitle
@@ -920,9 +1011,9 @@ Ui.Panel {
 
               BadgePill {
                 id: modBadgePill
-                visible: !root.showSettings && root.activeProvider !== null
+                visible: !root.showSettings && root.currentModule !== null
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.activeProvider ? root.activeProvider.badge : ""
+                text: root.currentModule ? root.currentModule.badge : ""
                 textColor: root.accentColor
                 pillFill: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.12)
                 pillBorder: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.3)
@@ -942,9 +1033,10 @@ Ui.Panel {
               textFormat: Text.PlainText
               text: root.showSettings
                 ? "Configure modular profiles, localhost telemetry, and status bar display"
-                : (root.activeProvider
-                  ? (usage.formatUpdatedAt(root.activeProvider.updatedAt)
-                    + (root.activeProvider.activeModel ? ("  ·  Model: " + root.activeProvider.activeModel) : ""))
+                : (root.currentModule
+                  ? ((root.currentModule.displayName ? (root.currentModule.displayName + " · ") : "")
+                    + usage.formatUpdatedAt(root.currentModule.updatedAt)
+                    + (root.currentModule.activeModel ? (" · " + root.currentModule.activeModel) : ""))
                   : "Enable one or more modules in Settings")
               color: root.subtleColor
               font.family: Style.font.family
@@ -956,7 +1048,7 @@ Ui.Panel {
           Row {
             id: headerActionsRow
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(4)
+            spacing: Style.space(5)
 
             PanelActionButton {
               visible: !root.showSettings && root.activeProvider !== null && root.activeProvider.id !== "combined"
@@ -968,13 +1060,50 @@ Ui.Panel {
               onClicked: root.launchAgent(root.activeProvider)
             }
 
-            PanelActionButton {
-              iconText: usage.refreshing ? "󰑓" : "󰑐"
-              tooltipText: usage.refreshing ? "Refreshing usage..." : "Refresh usage stats now"
-              foreground: usage.refreshing ? root.accentColor : root.fgColor
-              hoverColor: root.accentColor
-              bordered: true
-              onClicked: usage.refreshAll(true)
+            Rectangle {
+              width: syncBtnRow.implicitWidth + Style.space(14)
+              height: Style.space(28)
+              radius: Style.space(7)
+              color: syncBtnMouse.containsMouse || usage.refreshing
+                ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.18)
+                : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+              border.width: 1
+              border.color: syncBtnMouse.containsMouse || usage.refreshing
+                ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.45)
+                : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
+
+              Row {
+                id: syncBtnRow
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: usage.refreshing ? "󰑓" : "󰑐"
+                  color: usage.refreshing || syncBtnMouse.containsMouse ? root.accentColor : root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: usage.refreshing ? "Syncing..." : "Sync Nodes"
+                  color: usage.refreshing || syncBtnMouse.containsMouse ? root.accentColor : root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.DemiBold
+                }
+              }
+
+              MouseArea {
+                id: syncBtnMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: usage.refreshAll(true)
+              }
             }
 
             PanelActionButton {
@@ -1185,8 +1314,8 @@ Ui.Panel {
           }
 
           SettingsSectionCard {
-            title: "AGY MODULES (GOOGLE CLOUD / VERTEX AI)"
-            subtitle: "Enable one or both Antigravity GCP billing/quota projects."
+            title: "AGY MODULES (PERSONAL / CENSUS / CLOVER)"
+            subtitle: "Enable Antigravity modules across Personal (Homelab), Census (CSVD), and Clover (Work / Sandbox)."
 
             Repeater {
               model: root.usage.providersByGroup("agy")
@@ -1661,12 +1790,12 @@ Ui.Panel {
           }
 
           // -------------------------------------------------------------------
-          // TOP WORKSPACES & NODES BREAKDOWN (30D)
+          // ACTIVE NODES & TOP WORKSPACES BREAKDOWN (30D)
           // -------------------------------------------------------------------
           Rectangle {
             visible: root.activeProvider !== null
               && (((root.activeProvider.workspaceUsage instanceof Array) && root.activeProvider.workspaceUsage.length > 0)
-                  || ((root.activeProvider.hostsBreakdown instanceof Array) && root.activeProvider.hostsBreakdown.length > 0))
+                  || (root.activeNodesBreakdown.length > 0))
             width: parent.width
             implicitHeight: wsCol.implicitHeight + Style.space(20)
             radius: Style.cornerRadius
@@ -1679,6 +1808,102 @@ Ui.Panel {
               anchors.fill: parent
               anchors.margins: Style.space(10)
               spacing: Style.space(6)
+
+              Row {
+                visible: root.activeNodesBreakdown.length > 0
+                x: Style.space(6)
+                width: parent.width - Style.space(8)
+
+                Text {
+                  width: parent.width - syncNodesInlineBtn.width
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: "ACTIVE NODES (30D · 5 MESH HOSTS)"
+                  color: root.subtleColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                  font.letterSpacing: 0.6
+                }
+
+                Rectangle {
+                  id: syncNodesInlineBtn
+                  width: syncNodesInlineText.implicitWidth + Style.space(12)
+                  height: Style.space(18)
+                  radius: height / 2
+                  color: syncNodesInlineMouse.containsMouse || usage.refreshing
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.18)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                  border.width: 1
+                  border.color: syncNodesInlineMouse.containsMouse || usage.refreshing
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.45)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
+
+                  Text {
+                    id: syncNodesInlineText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: usage.refreshing ? "󰑓 Syncing..." : "󰑐 Sync"
+                    color: usage.refreshing || syncNodesInlineMouse.containsMouse ? root.accentColor : root.mutedColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.weight: Font.DemiBold
+                  }
+
+                  MouseArea {
+                    id: syncNodesInlineMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: usage.refreshAll(true)
+                  }
+                }
+              }
+
+              Flow {
+                visible: root.activeNodesBreakdown.length > 0
+                width: parent.width
+                spacing: Style.space(6)
+                bottomPadding: Style.space(4)
+
+                Repeater {
+                  model: root.activeNodesBreakdown
+
+                  delegate: Rectangle {
+                    required property var modelData
+                    width: hostChipRow.implicitWidth + Style.space(12)
+                    height: Style.space(20)
+                    radius: Style.space(5)
+                    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                    border.width: 1
+                    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
+
+                    Row {
+                      id: hostChipRow
+                      anchors.centerIn: parent
+                      spacing: Style.space(4)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: String(modelData.host || "") + ":"
+                        color: root.mutedColor
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: usage.formatUsd(modelData.costUsd !== undefined ? modelData.costUsd : (modelData.costUsd30d || 0), false)
+                          + " (" + String(modelData.sessions !== undefined ? modelData.sessions : (modelData.sessions30d || 0)) + "s)"
+                        color: root.fgColor
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        font.weight: Font.DemiBold
+                      }
+                    }
+                  }
+                }
+              }
 
               Row {
                 visible: (root.activeProvider && root.activeProvider.workspaceUsage instanceof Array && root.activeProvider.workspaceUsage.length > 0)
@@ -1806,67 +2031,7 @@ Ui.Panel {
                 }
               }
 
-              Text {
-                visible: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array && root.activeProvider.hostsBreakdown.length > 0)
-                x: Style.space(6)
-                width: parent.width - Style.space(8)
-                topPadding: (root.activeProvider && root.activeProvider.workspaceUsage instanceof Array && root.activeProvider.workspaceUsage.length > 0) ? Style.space(4) : 0
-                textFormat: Text.PlainText
-                text: "HOSTS / NODES (30D)"
-                color: root.subtleColor
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                font.weight: Font.Bold
-                font.letterSpacing: 0.6
-              }
 
-              // Hosts Breakdown Chips Row
-              Flow {
-                visible: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array && root.activeProvider.hostsBreakdown.length > 0)
-                width: parent.width
-                spacing: Style.space(6)
-                topPadding: Style.space(2)
-
-                Repeater {
-                  model: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array)
-                    ? root.activeProvider.hostsBreakdown
-                    : []
-
-                  delegate: Rectangle {
-                    required property var modelData
-                    width: hostChipRow.implicitWidth + Style.space(12)
-                    height: Style.space(20)
-                    radius: Style.space(5)
-                    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
-                    border.width: 1
-                    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
-
-                    Row {
-                      id: hostChipRow
-                      anchors.centerIn: parent
-                      spacing: Style.space(4)
-
-                      Text {
-                        textFormat: Text.PlainText
-                        text: String(modelData.host || "") + ":"
-                        color: root.mutedColor
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                      }
-
-                      Text {
-                        textFormat: Text.PlainText
-                        text: usage.formatUsd(modelData.costUsd !== undefined ? modelData.costUsd : (modelData.costUsd30d || 0), false)
-                          + " (" + String(modelData.sessions !== undefined ? modelData.sessions : (modelData.sessions30d || 0)) + "s)"
-                        color: root.fgColor
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                        font.weight: Font.DemiBold
-                      }
-                    }
-                  }
-                }
-              }
             }
           }
 
