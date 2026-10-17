@@ -98,8 +98,7 @@ def resolve_claude_meta(settings: dict | None = None) -> dict:
     work_dirs = list(work_cfg.get("dirs") or [work_config_dir])
     pers_dirs = list(pers_cfg.get("dirs") or ["~/.claude"])
     work_patterns = list(
-        work_cfg.get("sharedProjectGlobs")
-        or work_cfg.get("projectPatterns")
+        work_cfg.get("projectPatterns")
         or work_cfg.get("project_patterns")
         or DEFAULT_WORK_PROJECT_PATTERNS
     )
@@ -151,6 +150,20 @@ def discover_claude_dirs(meta: dict | None = None) -> list[tuple[str, Path]]:
             is_work = (work_dir_stem and work_dir_stem in p.name.lower()) or ("work" in p.name.lower())
             raw.append(("fiserv-claude" if is_work else "claude", p))
 
+    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+    if remote_hosts_root.exists():
+        for host_dir in sorted(remote_hosts_root.iterdir()):
+            if not host_dir.is_dir():
+                continue
+            hname = host_dir.name
+            is_work_host = hname in ("netctl1", "netctl2")
+            c_root = host_dir / "claude"
+            if c_root.exists():
+                for sub in sorted(c_root.iterdir()):
+                    if sub.is_dir():
+                        lbl = "fiserv-claude" if (is_work_host or "work" in sub.name.lower()) else "claude"
+                        raw.append((lbl, sub))
+
     seen: set[str] = set()
     out: list[tuple[str, Path]] = []
     for lbl, p in raw:
@@ -192,7 +205,26 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
     else:
         proj_folder = parent_name
     prof = _classify_project_dir(base_label, proj_folder, work_patterns)
-    ws_name = proj_folder.split("-")[-1] if "-" in proj_folder else proj_folder
+    pf_clean = proj_folder
+    if pf_clean.startswith("remote-"):
+        parts = pf_clean.split("--", 1)
+        host_tag = parts[0].replace("remote-", "")
+        rem = parts[1] if len(parts) > 1 else ""
+        if rem in ("home-jfarr", "home-jfarrz", ""):
+            ws_name = host_tag
+        else:
+            for prefix in ("home-jfarr-projects-", "home-jfarr-", "home-jfarrz-"):
+                if rem.startswith(prefix):
+                    rem = rem[len(prefix):]
+                    break
+            ws_name = f"{host_tag}:{rem}" if rem else host_tag
+    else:
+        rem = pf_clean.lstrip("-")
+        for prefix in ("home-jfarr-projects-", "home-jfarr-", "home-jfarrz-"):
+            if rem.startswith(prefix):
+                rem = rem[len(prefix):]
+                break
+        ws_name = rem if rem else "home" 
 
     try:
         mtime = jf.stat().st_mtime
@@ -219,6 +251,8 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
     s_cost = 0.0
     s_mod = "claude-sonnet-4-6"
     last_cost_state = None
+    msg_usage: dict[str, tuple[int, int, int, int, str]] = {}
+    anon_idx = 0
 
     for ln in lines:
         if not ln.strip():
@@ -232,23 +266,44 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
             day_str, last_ts = _local_day_and_ts(ts_s, mtime)
         t = obj.get("type")
         if t == "user":
-            s_p += 1
+            if not obj.get("isMeta"):
+                msg = obj.get("message") or {}
+                content = msg.get("content") if isinstance(msg, dict) else None
+                is_tool_res = (
+                    isinstance(content, list)
+                    and len(content) > 0
+                    and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+                )
+                if not is_tool_res:
+                    s_p += 1
         elif t == "assistant":
             msg = obj.get("message") or {}
-            if msg.get("model") and msg.get("model") != "<synthetic>":
-                s_mod = _norm_model(msg.get("model"))
+            raw_m = msg.get("model")
+            if raw_m and not str(raw_m).startswith("<"):
+                s_mod = _norm_model(raw_m)
             u = msg.get("usage") or {}
-            it = int(u.get("input_tokens", 0) or 0)
-            ot = int(u.get("output_tokens", 0) or 0)
-            cr = int(u.get("cache_read_input_tokens", 0) or 0)
-            cw = int(u.get("cache_creation_input_tokens", 0) or 0)
-            s_it += it
-            s_ot += ot
-            s_cr += cr
-            s_cw += cw
-            s_tok += it + ot + cr + cw
+            if u:
+                it = int(u.get("input_tokens", 0) or 0)
+                ot = int(u.get("output_tokens", 0) or 0)
+                cr = int(u.get("cache_read_input_tokens", 0) or 0)
+                cw = int(u.get("cache_creation_input_tokens", 0) or 0)
+                if it or ot or cr or cw:
+                    mid = msg.get("id") or obj.get("requestId")
+                    if not mid:
+                        anon_idx += 1
+                        mid = f"anon_{anon_idx}"
+                    prev = msg_usage.get(mid)
+                    if prev is None or (it + ot + cr + cw) >= (prev[0] + prev[1] + prev[2] + prev[3]):
+                        msg_usage[mid] = (it, ot, cr, cw, s_mod)
         elif t == "cost-state":
             last_cost_state = obj
+
+    for it, ot, cr, cw, m_id in msg_usage.values():
+        s_it += it
+        s_ot += ot
+        s_cr += cr
+        s_cw += cw
+        s_tok += it + ot + cr + cw
 
     if s_tok == 0 and last_cost_state:
         cs_cost = float(last_cost_state.get("totalCostUSD") or last_cost_state.get("totalCost") or 0.0)
@@ -304,7 +359,7 @@ def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> 
     if cache_p.exists():
         try:
             raw = json.loads(cache_p.read_text(encoding="utf-8"))
-            if raw.get("__schema__") == 2:
+            if raw.get("__schema__") == 3:
                 cache = raw.get("files", {})
         except Exception:
             cache = {}
@@ -318,28 +373,34 @@ def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> 
         proj_d = cdir / "projects"
         if not proj_d.exists():
             continue
-        for jf in sorted(proj_d.rglob("*.jsonl")):
-            sid = jf.stem
+        jsonl_paths: list[str] = []
+        for root, _, files in os.walk(str(proj_d)):
+            for fn in files:
+                if fn.endswith(".jsonl"):
+                    jsonl_paths.append(f"{root}/{fn}")
+        jsonl_paths.sort()
+        for f_key in jsonl_paths:
+            fn = f_key.rsplit("/", 1)[-1]
+            sid = fn[:-6]
             if sid in seen_sids:
                 continue
             try:
-                st = jf.stat()
+                st = os.stat(f_key)
             except OSError:
                 continue
             seen_sids.add(sid)
-            f_key = str(jf)
             sig = f"{st.st_size}:{int(st.st_mtime)}:{base_label}"
             if f_key in cache and cache[f_key].get("sig") == sig:
                 entry = cache[f_key]
             else:
-                entry = {"sig": sig, "data": _parse_claude_jsonl(jf, base_label, work_patterns)}
+                entry = {"sig": sig, "data": _parse_claude_jsonl(Path(f_key), base_label, work_patterns)}
                 dirty = True
             new_cache[f_key] = entry
             sessions.append(entry["data"])
 
     if dirty or len(new_cache) != len(cache):
         try:
-            cache_p.write_text(json.dumps({"__schema__": 2, "files": new_cache}), encoding="utf-8")
+            cache_p.write_text(json.dumps({"__schema__": 3, "files": new_cache}), encoding="utf-8")
             cache_p.chmod(0o600)
         except Exception:
             pass
@@ -404,8 +465,8 @@ def _build_claude_record(
     day_stats: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "prompts": 0, "sessions": set(), "cost": 0.0})
     mod_stats_30d: dict[str, list] = defaultdict(lambda: [0, 0, 0, 0, 0.0])
     mod_stats_all: dict[str, list] = defaultdict(lambda: [0, 0, 0, 0, 0.0])
-    ws_stats: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "prompts": 0, "sessions": set(), "last": ""})
-    ws_stats_all: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "prompts": 0, "sessions": set(), "last": ""})
+    ws_stats: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "prompts": 0, "sessions": set(), "last": ""})
+    ws_stats_all: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "prompts": 0, "sessions": set(), "last": ""})
 
     sessions_30d: set[str] = set()
     sessions_7d: set[str] = set()
@@ -439,6 +500,7 @@ def _build_claude_record(
                 mod_stats_all[s_mod][3] += s_cw
                 mod_stats_all[s_mod][4] += s_cost
             ws_stats_all[ws_name]["tokens"] += s_tok
+            ws_stats_all[ws_name]["cost"] += s_cost
             ws_stats_all[ws_name]["prompts"] += s_p
             ws_stats_all[ws_name]["sessions"].add(sid)
             if day_str > ws_stats_all[ws_name]["last"]:
@@ -463,6 +525,7 @@ def _build_claude_record(
                     mod_stats_30d[s_mod][3] += s_cw
                     mod_stats_30d[s_mod][4] += s_cost
                 ws_stats[ws_name]["tokens"] += s_tok
+                ws_stats[ws_name]["cost"] += s_cost
                 ws_stats[ws_name]["prompts"] += s_p
                 ws_stats[ws_name]["sessions"].add(sid)
                 if day_str > ws_stats[ws_name]["last"]:
@@ -582,11 +645,12 @@ def _build_claude_record(
         {
             "workspace": k,
             "tokens": v["tokens"],
+            "costUsd": round(v["cost"], 2),
             "prompts": v["prompts"],
             "sessions": len(v["sessions"]),
             "lastActive": v["last"],
         }
-        for k, v in sorted(ws_source.items(), key=lambda x: -x[1]["tokens"])[:10]
+        for k, v in sorted(ws_source.items(), key=lambda x: -x[1]["cost"])[:10]
     ]
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -604,8 +668,8 @@ def _build_claude_record(
         "shortLabel": short_label,
         "displayName": display_name,
         "badge": badge,
-        "executionScope": "localhost",
-        "localhostOnly": True,
+        "executionScope": "multi-host",
+        "localhostOnly": False,
         "aggregated": aggregated,
         "status": "online",
         "scope": "account",
@@ -775,7 +839,7 @@ def collect_claude_profiles(force: bool = False, split_profiles: bool | None = N
 
     family_summary = {
         "family": "claude",
-        "executionScope": "localhost",
+        "executionScope": "multi-host",
         "splitProfiles": bool(split_profiles),
         "tokens30d": sum(pb["tokens30d"] for pb in all_prof_breakdown),
         "tokens7d": sum(pb["tokens7d"] for pb in all_prof_breakdown),
@@ -839,19 +903,23 @@ def collect_claude_profiles(force: bool = False, split_profiles: bool | None = N
         personal_limits_info=personal_limits_info,
         aggregated=False,
     )
-    rec_all = _build_claude_record(
-        record_id="claude",
-        profile_key="all",
-        profile_name="Claude Code",
-        display_name="Claude Code",
-        short_label="Claude",
-        badge="all",
-        target_prof=None,
-        sessions=sessions,
-        all_prof_breakdown=all_prof_breakdown,
-        family_summary=family_summary,
-        personal_limits_info=personal_limits_info,
-        aggregated=True,
+    rec_all = (
+        rec_personal
+        if split_profiles
+        else _build_claude_record(
+            record_id="claude",
+            profile_key="all",
+            profile_name="Claude Code",
+            display_name="Claude Code",
+            short_label="Claude",
+            badge="all",
+            target_prof=None,
+            sessions=sessions,
+            all_prof_breakdown=all_prof_breakdown,
+            family_summary=family_summary,
+            personal_limits_info=personal_limits_info,
+            aggregated=True,
+        )
     )
 
     return {
@@ -864,6 +932,8 @@ def collect_claude_profiles(force: bool = False, split_profiles: bool | None = N
 
 
 def collect_claude_data(force: bool = False, profile: str | None = None, split_profiles: bool | None = None) -> dict:
+    if profile == "all":
+        split_profiles = False
     profiles = collect_claude_profiles(force=force, split_profiles=split_profiles)
     if profile in ("fiserv-claude", "fiserv"):
         return profiles["fiserv-claude"]

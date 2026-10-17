@@ -65,43 +65,27 @@ PROJ_RE = re.compile(r"projects/([a-zA-Z0-9_-]+)/locations/")
 PARENT_RE = re.compile(r'parent"?[,\s]+id:\s*"?([0-9a-f-]{36})')
 
 
-_COST_CACHE: dict[str, tuple[float, float, float]] = {}
+import functools
+
 _DAY_CACHE: dict[int, str] = {}
 
 
+@functools.lru_cache(maxsize=8192)
+def _bucket_to_day(b: int) -> str:
+    return datetime.fromtimestamp(b * 900).strftime("%Y-%m-%d")
+
+
 def _ts_to_day(ts: int) -> str:
-    b = ts // 900
+    b = int(ts) // 900
     d = _DAY_CACHE.get(b)
     if d is None:
-        d = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+        d = _bucket_to_day(b)
         _DAY_CACHE[b] = d
     return d
 
 
+@functools.lru_cache(maxsize=256)
 def _cost_rates(model_id: str) -> tuple[float, float, float]:
-    cached = _COST_CACHE.get(model_id)
-    if cached is not None:
-        return cached
-    m = (model_id or "").lower()
-    if m in COST_PER_M:
-        res = COST_PER_M[m]
-    elif "flash-lite" in m or "lite" in m:
-        res = (0.075, 0.30, 0.0075)
-    elif "flash" in m:
-        res = (0.15, 0.60, 0.015)
-    elif "haiku" in m:
-        res = (0.80, 4.0, 0.08)
-    elif "sonnet" in m:
-        res = (3.0, 15.0, 0.30)
-    elif "opus" in m:
-        res = (5.0, 25.0, 0.50)
-    else:
-        res = (1.25, 10.0, 0.125)
-    _COST_CACHE[model_id] = res
-    return res
-
-
-def _cost_rates_unused(model_id: str) -> tuple[float, float, float]:
     m = (model_id or "").lower()
     if m in COST_PER_M:
         return COST_PER_M[m]
@@ -118,6 +102,44 @@ def _cost_rates_unused(model_id: str) -> tuple[float, float, float]:
     return (1.25, 10.0, 0.125)
 
 
+def _compact_session_events(events: list, now_ts: int) -> list:
+    """Drop unused tool/sub events and coalesce prompt/usage events by day (and 5-min window for recent 24h)."""
+    cutoff_24h = now_ts - 86400
+    p_by_day: dict[str, list] = {}
+    u_buckets: dict[tuple[str, int, str], list] = {}
+    for ev in events:
+        if len(ev) < 6:
+            continue
+        ts, et, mod, it, ot, ct = ev[:6]
+        if not ts:
+            continue
+        if et == "p":
+            cnt = it if it > 0 else 1
+            day = _ts_to_day(ts)
+            prev = p_by_day.get(day)
+            if prev is None:
+                p_by_day[day] = [ts, "p", "", cnt, 0, 0]
+            else:
+                if ts > prev[0]:
+                    prev[0] = ts
+                prev[3] += cnt
+        elif et == "u":
+            day = _ts_to_day(ts)
+            b_key = (day, 0 if ts < cutoff_24h else (int(ts) // 300), mod)
+            prev = u_buckets.get(b_key)
+            if prev is None:
+                u_buckets[b_key] = [ts, "u", mod, it, ot, ct]
+            else:
+                if ts > prev[0]:
+                    prev[0] = ts
+                prev[3] += it
+                prev[4] += ot
+                prev[5] += ct
+    out = list(p_by_day.values()) + list(u_buckets.values())
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 def _varint(b: bytes, p: int) -> tuple[int, int]:
     v = s = 0
     while p < len(b):
@@ -131,6 +153,8 @@ def _varint(b: bytes, p: int) -> tuple[int, int]:
 
 
 def _pb(b: bytes) -> dict[int, list]:
+    if not isinstance(b, (bytes, bytearray, memoryview)):
+        return defaultdict(list)
     p = 0
     out: dict[int, list] = defaultdict(list)
     while p < len(b):
@@ -161,8 +185,15 @@ def _s(b) -> str:
     return b.decode("utf-8", errors="ignore") if isinstance(b, bytes) else str(b)
 
 
+_MODULAR_SETTINGS_CACHE: dict | None = None
+_AGY_META_CACHE: dict | None = None
+
+
 def load_modular_settings() -> dict:
     """Load modular plugin settings from profiles.json, state settings, or manifest defaults."""
+    global _MODULAR_SETTINGS_CACHE
+    if _MODULAR_SETTINGS_CACHE is not None:
+        return _MODULAR_SETTINGS_CACHE
     candidates = [
         Path.home() / ".config/omarchy/agents/profiles.json",
         Path.home() / ".local/state/omarchy/settings/nertwork.agents.json",
@@ -173,31 +204,64 @@ def load_modular_settings() -> dict:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and ("providers" in data or "agents" in data or "enabledAgents" in data):
+                    _MODULAR_SETTINGS_CACHE = data
                     return data
             except Exception:
                 pass
-    return {}
+    _MODULAR_SETTINGS_CACHE = {}
+    return _MODULAR_SETTINGS_CACHE
+
+
+CLOVER_WORKSPACES = {
+    "clover-ai-ops",
+    "snv-rtr-ops",
+    "corp-proxmox",
+    "terraform-proxmox-vm",
+    "network-ansible",
+    "nit-dns-tools",
+    "poc_quota_alerts",
+    "librenms",
+    "enc",
+}
+
+
+@functools.lru_cache(maxsize=256)
+def _is_clover_workspace(ws: str | None) -> bool:
+    if not ws:
+        return False
+    w = ws.strip()
+    if w in CLOVER_WORKSPACES:
+        return True
+    wl = w.lower()
+    return any(k in wl for k in ("clover", "fiserv", "snv", "netctl"))
 
 
 def is_agy_split_enabled(settings: dict | None = None) -> bool:
     if settings is None:
         settings = load_modular_settings()
     provs = settings.get("providers") or {}
-    if isinstance(provs, dict) and "agy-sandbox" in provs:
-        return bool(provs["agy-sandbox"].get("enabled", False))
+    if isinstance(provs, dict):
+        if "agy-sandbox" in provs and bool(provs["agy-sandbox"].get("enabled", False)):
+            return True
+        if "agy-personal" in provs and bool(provs["agy-personal"].get("enabled", False)):
+            return True
     enabled_list = settings.get("enabledAgents") or settings.get("enabledProviders") or []
-    if isinstance(enabled_list, list) and "agy-sandbox" in enabled_list:
+    if isinstance(enabled_list, list) and any(k in enabled_list for k in ("agy-sandbox", "agy-personal")):
         return True
     return False
 
 
 def resolve_agy_meta(settings: dict | None = None) -> dict:
+    global _AGY_META_CACHE
+    if settings is None and _AGY_META_CACHE is not None:
+        return _AGY_META_CACHE
     if settings is None:
         settings = load_modular_settings()
     provs = settings.get("providers") or {}
     profs = settings.get("profiles") or {}
     agy_p = {**(profs.get("agy") or {}), **(provs.get("agy") or {})}
     sb_p = {**(profs.get("agy-sandbox") or {}), **(provs.get("agy-sandbox") or {})}
+    pers_p = {**(profs.get("agy-personal") or {}), **(provs.get("agy-personal") or {})}
 
     def _read_dir_proj(d: Path) -> str:
         sp = d / "settings.json"
@@ -210,24 +274,36 @@ def resolve_agy_meta(settings: dict | None = None) -> dict:
 
     pri_proj = str(agy_p.get("gcpProject") or (agy_p.get("projects") or [""])[0] or agy_p.get("profile") or "").strip()
     if pri_proj in ("", "default", "primary", "all"):
-        pri_proj = _read_dir_proj(Path.home() / ".gemini/antigravity-cli") or "agy-primary"
+        pri_proj = _read_dir_proj(Path.home() / ".gemini/antigravity-cli") or "clover-corp-ai"
 
     sb_proj = str(sb_p.get("gcpProject") or (sb_p.get("projects") or [""])[0] or sb_p.get("profile") or "").strip()
     if sb_proj in ("", "default", "sandbox", "all"):
-        sb_proj = _read_dir_proj(Path.home() / ".gemini/antigravity-cli-sandbox") or "agy-sandbox"
+        sb_proj = _read_dir_proj(Path.home() / ".gemini/antigravity-cli-sandbox") or "clover-sandbox"
 
-    return {
+    pers_proj = str(pers_p.get("gcpProject") or (pers_p.get("projects") or [""])[0] or pers_p.get("profile") or "").strip()
+    if pers_proj in ("", "default", "personal", "all"):
+        pers_proj = "personal-homelab-census"
+
+    _res_meta = {
         "primary_proj": pri_proj,
         "sandbox_proj": sb_proj,
-        "primary_label": str(agy_p.get("label") or "AGY"),
-        "primary_short": str(agy_p.get("shortLabel") or "AGY"),
-        "primary_display": str(agy_p.get("displayName") or "Antigravity (Primary)"),
+        "personal_proj": pers_proj,
+        "primary_label": str(agy_p.get("label") or "AGY Corp"),
+        "primary_short": str(agy_p.get("shortLabel") or "AGY · Corp"),
+        "primary_display": str(agy_p.get("displayName") or "Antigravity (Clover / Fiserv Corp)"),
         "primary_badge": str(agy_p.get("badge") or pri_proj),
         "sandbox_label": str(sb_p.get("label") or "AGY Sandbox"),
         "sandbox_short": str(sb_p.get("shortLabel") or "AGY · Sandbox"),
-        "sandbox_display": str(sb_p.get("displayName") or "Antigravity (Sandbox)"),
+        "sandbox_display": str(sb_p.get("displayName") or "Antigravity (Clover / Fiserv Sandbox)"),
         "sandbox_badge": str(sb_p.get("badge") or sb_proj),
+        "personal_label": str(pers_p.get("label") or "AGY Personal"),
+        "personal_short": str(pers_p.get("shortLabel") or "AGY · Personal"),
+        "personal_display": str(pers_p.get("displayName") or "Antigravity (Personal / Homelab / Census)"),
+        "personal_badge": str(pers_p.get("badge") or "personal"),
     }
+    if _AGY_META_CACHE is None:
+        _AGY_META_CACHE = dict(_res_meta)
+    return _res_meta
 
 
 def discover_agy_config() -> tuple[list[tuple[Path, str, bool]], list[str]]:
@@ -242,6 +318,7 @@ def discover_agy_config() -> tuple[list[tuple[Path, str, bool]], list[str]]:
     raw_dirs: list[Path] = [
         Path.home() / ".gemini/antigravity-cli",
         Path.home() / ".gemini/antigravity-cli-sandbox",
+        Path.home() / ".gemini/antigravity-cli-personal",
     ]
     for p_key in ("agy", "agy-sandbox"):
         p_cfg = provs.get(p_key) or {}
@@ -307,56 +384,156 @@ def _parse_session(cid: str, db_p: Path | None, tr_p: Path | None, default_proj:
         "events": [],
     }
     if db_p and db_p.exists():
+        conn = None
+        try:
+             fallback_ts = int(db_p.stat().st_mtime)
+        except Exception:
+            fallback_ts = 0
         try:
             conn = sqlite3.connect(f"file:{db_p}?mode=ro", uri=True, timeout=2.0)
-            row = conn.execute("SELECT data FROM trajectory_metadata_blob LIMIT 1").fetchone()
-            if row and row[0]:
-                m = _pb(row[0])
-                if 5 in m:
-                    res["parent"] = _s(m[5][0]).strip()
-                if 7 in m:
-                    u = _pb(m[7][0])
-                    if 1 in u:
-                        res["ws"] = Path(urllib.parse.unquote(_s(u[1][0])).replace("file://", "")).name or "global"
-            for st, meta, gm in conn.execute("SELECT s.step_type, s.metadata, g.data FROM steps s LEFT JOIN gen_metadata g ON s.idx = g.idx"):
-                res["steps"] += 1
-                ts = 0
-                if meta:
-                    mp = _pb(meta)
-                    if 1 in mp:
-                        tp = _pb(mp[1][0])
-                        if 1 in tp and isinstance(tp[1][0], int):
-                            ts = tp[1][0]
-                if ts > res["ts"]:
-                    res["ts"] = ts
-                if st == 14:
-                    res["prompts"] += 1
-                    res["events"].append([ts, "p", "", 0, 0, 0])
-                elif st not in (14, 15, 17, 23, 101):
-                    res["tools"] += 1
-                    res["events"].append([ts, "t", "", 0, 0, 0])
-                if gm:
+            try:
+                row = conn.execute("SELECT data FROM trajectory_metadata_blob LIMIT 1").fetchone()
+                if row and row[0]:
+                    m = _pb(row[0])
+                    if 5 in m:
+                        res["parent"] = _s(m[5][0]).strip()
+                    if 7 in m:
+                        for m7 in m[7]:
+                            u = _pb(m7)
+                            if 1 in u:
+                                cand = Path(urllib.parse.unquote(_s(u[1][0])).replace("file://", "")).name
+                                if cand:
+                                    res["ws"] = cand
+                                    break
+                    if res["ws"] == "global" and isinstance(row[0], (bytes, bytearray)):
+                        for fm in re.findall(rb"file:///[^\x00-\x1f\"<> )]+", bytes(row[0])):
+                            cand_p = urllib.parse.unquote(fm.decode("utf-8", errors="ignore")).replace("file://", "").rstrip("/")
+                            if "/.gemini" not in cand_p and cand_p not in ("", "/home", "/home/jfarr"):
+                                res["ws"] = Path(cand_p).name or "global"
+                                break
+            except Exception:
+                pass
+
+            step_rows = []
+            try:
+                step_rows = conn.execute("SELECT idx, step_type, metadata FROM steps ORDER BY idx").fetchall()
+            except sqlite3.DatabaseError:
+                misses = 0
+                for idx in range(0, 20000):
+                    try:
+                        r = conn.execute("SELECT idx, step_type, metadata FROM steps WHERE idx = ?", (idx,)).fetchone()
+                        if r:
+                            step_rows.append(r)
+                            misses = 0
+                        else:
+                            misses += 1
+                            if misses > 50:
+                                break
+                    except sqlite3.DatabaseError:
+                        misses = 0
+
+            step_ts: dict[int, int] = {}
+            last_valid_ts = fallback_ts
+            for s_idx, st, meta in step_rows:
+                try:
+                    res["steps"] += 1
+                    ts = 0
+                    if meta:
+                        mp = _pb(meta)
+                        if 1 in mp:
+                            tp = _pb(mp[1][0])
+                            if 1 in tp and isinstance(tp[1][0], int):
+                                ts = tp[1][0]
+                    if ts <= 0:
+                        ts = last_valid_ts
+                    else:
+                        last_valid_ts = ts
+                    if isinstance(s_idx, int):
+                        step_ts[s_idx] = ts
+                    if ts > res["ts"]:
+                        res["ts"] = ts
+                    if st == 14:
+                        res["prompts"] += 1
+                        res["events"].append([ts, "p", "", 1, 0, 0])
+                    elif st not in (14, 15, 17, 23, 101):
+                        res["tools"] += 1
+                except Exception:
+                    continue
+
+            gen_rows = []
+            try:
+                gen_rows = conn.execute("SELECT idx, data FROM gen_metadata ORDER BY idx").fetchall()
+            except sqlite3.DatabaseError:
+                misses = 0
+                for idx in range(0, 10000):
+                    try:
+                        r = conn.execute("SELECT idx, data FROM gen_metadata WHERE idx = ?", (idx,)).fetchone()
+                        if r:
+                            gen_rows.append(r)
+                            misses = 0
+                        else:
+                            misses += 1
+                            if misses > 50:
+                                break
+                    except sqlite3.DatabaseError:
+                        misses = 0
+
+            sorted_s_idxs = sorted(step_ts.keys())
+            for g_idx, gm in gen_rows:
+                if not gm:
+                    continue
+                try:
                     gp = _pb(gm)
-                    if 1 in gp:
-                        s1 = _pb(gp[1][0])
-                        if 17 in s1:
-                            err_s = _s(s1[17][0])
-                            pm = PROJ_RE.search(err_s)
-                            if pm and pm.group(1) != "default-cli-project":
-                                res["proj"] = pm.group(1)
-                                res["explicit_proj"] = True
-                        raw_m = _s(s1[19][0]) if 19 in s1 else "MODEL_GOOGLE_GEMINI_PRO_3_1"
-                        mod = MODEL_MAP.get(raw_m, raw_m.lower().replace("model_", "").replace("_", "-"))
-                        if 4 in s1:
-                            u = _pb(s1[4][0])
-                            it = u[2][0] if 2 in u and isinstance(u[2][0], int) else 0
-                            ot = u[3][0] if 3 in u and isinstance(u[3][0], int) else 0
-                            ct = u[5][0] if 5 in u and isinstance(u[5][0], int) else 0
-                            if it or ot or ct:
-                                res["events"].append([ts, "u", mod, it, ot, ct])
-            conn.close()
+                    if 1 not in gp:
+                        continue
+                    s1 = _pb(gp[1][0])
+                    if 17 in s1:
+                        err_s = _s(s1[17][0])
+                        pm = PROJ_RE.search(err_s)
+                        if pm and pm.group(1) != "default-cli-project":
+                            res["proj"] = pm.group(1)
+                            res["explicit_proj"] = True
+                    target_step = None
+                    for entry_b in s1.get(20, []):
+                        kv = _pb(entry_b)
+                        if 1 in kv and _s(kv[1][0]) == "last_step_index" and 2 in kv:
+                            try:
+                                target_step = int(_s(kv[2][0]))
+                            except Exception:
+                                pass
+                            break
+                    ts = 0
+                    if target_step is not None:
+                        if target_step in step_ts:
+                            ts = step_ts[target_step]
+                        elif sorted_s_idxs:
+                            # nearest step <= target_step
+                            prev_idxs = [x for x in sorted_s_idxs if x <= target_step]
+                            ts = step_ts[prev_idxs[-1]] if prev_idxs else step_ts[sorted_s_idxs[0]]
+                    if ts <= 0:
+                        if isinstance(g_idx, int) and g_idx in step_ts:
+                            ts = step_ts[g_idx]
+                        else:
+                            ts = res["ts"] or fallback_ts
+                    raw_m = _s(s1[19][0]) if 19 in s1 else "MODEL_GOOGLE_GEMINI_PRO_3_1"
+                    mod = MODEL_MAP.get(raw_m, raw_m.lower().replace("model_", "").replace("_", "-"))
+                    if 4 in s1:
+                        u = _pb(s1[4][0])
+                        it = u[2][0] if 2 in u and isinstance(u[2][0], int) else 0
+                        ot = u[3][0] if 3 in u and isinstance(u[3][0], int) else 0
+                        ct = u[5][0] if 5 in u and isinstance(u[5][0], int) else 0
+                        if it or ot or ct:
+                            res["events"].append([ts, "u", mod, it, ot, ct])
+                except Exception:
+                    continue
         except Exception:
             pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     if tr_p and tr_p.exists():
         try:
@@ -378,12 +555,9 @@ def _parse_session(cid: str, db_p: Path | None, tr_p: Path | None, default_proj:
                         res["ts"] = ts
                     if obj.get("type") == "USER_INPUT":
                         res["prompts"] += 1
-                        res["events"].append([ts, "p", "", 0, 0, 0])
-                    for tc in obj.get("tool_calls", []):
+                        res["events"].append([ts, "p", "", 1, 0, 0])
+                    for _tc in obj.get("tool_calls", []):
                         res["tools"] += 1
-                        res["events"].append([ts, "t", "", 0, 0, 0])
-                        if tc.get("name") == "invoke_subagent":
-                            res["events"].append([ts, "sub", "", 0, 0, 0])
                     u = obj.get("usage")
                     if isinstance(u, dict):
                         raw_m = u.get("model") or "gemini-3.1-pro-high"
@@ -395,6 +569,8 @@ def _parse_session(cid: str, db_p: Path | None, tr_p: Path | None, default_proj:
                             res["events"].append([ts, "u", mod, it, ot, ct])
         except Exception:
             pass
+    if res["events"]:
+        res["events"] = _compact_session_events(res["events"], int(time.time()))
     return res
 
 
@@ -499,14 +675,28 @@ def _query_project_cloud(proj: str, tok: str, now_dt: datetime) -> dict:
 
 
 def _refresh_cloud_cache_sync(projects: list[str], cp: Path) -> dict:
-    tok = _gcloud_token()
-    if not tok:
-        return json.loads(cp.read_text(encoding="utf-8")).get("projects", {}) if cp.exists() else {}
-    now_dt = datetime.now(timezone.utc)
-    with ThreadPoolExecutor(max_workers=max(1, len(projects))) as ex:
-        res = {r["project"]: r for r in ex.map(lambda p: _query_project_cloud(p, tok, now_dt), projects)}
-    cp.write_text(json.dumps({"ts": time.time(), "projects": res}), encoding="utf-8")
-    return res
+    import fcntl
+    lock_p = cp.with_suffix(".lock")
+    lock_p.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_p, "w", encoding="utf-8") as lf:
+        try:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return json.loads(cp.read_text(encoding="utf-8")).get("projects", {}) if cp.exists() else {}
+        tok = _gcloud_token()
+        if not tok:
+            if cp.exists():
+                try:
+                    cp.touch()
+                except Exception:
+                    pass
+                return json.loads(cp.read_text(encoding="utf-8")).get("projects", {})
+            return {}
+        now_dt = datetime.now(timezone.utc)
+        with ThreadPoolExecutor(max_workers=max(1, len(projects))) as ex:
+            res = {r["project"]: r for r in ex.map(lambda p: _query_project_cloud(p, tok, now_dt), projects)}
+        cp.write_text(json.dumps({"ts": time.time(), "projects": res}), encoding="utf-8")
+        return res
 
 
 def get_cloud_metrics(projects: list[str], force: bool = False, refresh_cloud_sync: bool = False) -> dict:
@@ -528,8 +718,9 @@ def get_cloud_metrics(projects: list[str], force: bool = False, refresh_cloud_sy
 
     if cached_projects is not None:
         if (force and age > 120) or age > 300:
-            # Spawn non-blocking background refresh so local telemetry collection never stalls on gcloud
+            # Touch mtime before spawning so concurrent callers do not spawn duplicate background refreshes
             try:
+                cp.touch()
                 subprocess.Popen(
                     [sys.executable, str(Path(__file__).resolve()), "--refresh-cloud-only"],
                     stdout=subprocess.DEVNULL,
@@ -544,64 +735,51 @@ def get_cloud_metrics(projects: list[str], force: bool = False, refresh_cloud_sy
 
 
 def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: bool = False) -> dict[str, dict]:
-    sc_p = Path.home() / ".cache/omarchy/agy-scan-cache.json"
-    sc_p.parent.mkdir(parents=True, exist_ok=True)
-    sc = {}
-    if not rebuild_cache and sc_p.exists():
+    sc_p = Path.home() / ".gemini/antigravity-cli/.sessions_cache_v3.json"
+    sc: dict[str, dict] = {}
+    migrated_schema = False
+    now_ts = int(time.time())
+    if sc_p.exists() and not rebuild_cache:
         try:
             raw_sc = json.loads(sc_p.read_text(encoding="utf-8"))
-            if raw_sc.get("__schema__") == 3:
+            schema_v = int(raw_sc.get("__schema__", 0) or 0)
+            if schema_v in (5, 6):
                 sc = raw_sc.get("sessions", {})
+                if schema_v < 6:
+                    for _entry in sc.values():
+                        _d = _entry.get("data")
+                        if isinstance(_d, dict) and "events" in _d:
+                            _d["events"] = _compact_session_events(_d["events"], now_ts)
+                    migrated_schema = True
         except Exception:
             sc = {}
 
+    meta = resolve_agy_meta()
+    pri_p = meta["primary_proj"]
+    sb_p = meta["sandbox_proj"]
+
     cids: dict[str, dict] = {}
-    for d, dir_proj, is_dedicated in dirs:
-        conv_d, brain_d = d / "conversations", d / "brain"
-        if conv_d.exists():
-            for f in conv_d.glob("*.db"):
-                cid = f.stem
-                try:
-                    st = f.stat()
-                except OSError:
-                    continue
-                if cid not in cids or st.st_size > cids[cid]["db_sz"]:
-                    cids.setdefault(
-                        cid,
-                        {
-                            "db": None,
-                            "db_sz": 0,
-                            "db_mt": 0,
-                            "tr": None,
-                            "tr_sz": 0,
-                            "tr_mt": 0,
-                            "proj": dir_proj,
-                            "dedicated": is_dedicated,
-                        },
-                    )
-                    cids[cid].update(
-                        {
-                            "db": f,
-                            "db_sz": st.st_size,
-                            "db_mt": int(st.st_mtime),
-                            "proj": dir_proj,
-                            "dedicated": is_dedicated,
-                        }
-                    )
-        if brain_d.exists():
-            for b in brain_d.iterdir():
-                if not b.is_dir():
-                    continue
-                cid = b.name
-                tr = b / ".system_generated/logs/transcript.jsonl"
-                if tr.exists():
+
+    def _register_dir(d: Path, dir_proj: str, is_dedicated: bool, host_name: str, is_personal_dir: bool = False):
+        d_str = str(d)
+        for sub in (f"{d_str}/conversations", d_str):
+            try:
+                it = os.scandir(sub)
+            except OSError:
+                continue
+            with it:
+                for de in it:
+                    name = de.name
+                    if not name.endswith(".db") or name == "conversation_summaries.db":
+                        continue
+                    cid = name[:-3]
                     try:
-                        st = tr.stat()
+                        st = de.stat()
                     except OSError:
                         continue
-                    cids.setdefault(
-                        cid,
-                        {
+                    entry = cids.get(cid)
+                    if entry is None:
+                        entry = {
                             "db": None,
                             "db_sz": 0,
                             "db_mt": 0,
@@ -610,25 +788,114 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                             "tr_mt": 0,
                             "proj": dir_proj,
                             "dedicated": is_dedicated,
-                        },
-                    )
-                    if st.st_size > cids[cid]["tr_sz"]:
-                        cids[cid].update({"tr": tr, "tr_sz": st.st_size, "tr_mt": int(st.st_mtime)})
+                            "personal_dir": is_personal_dir,
+                            "hosts": set(),
+                        }
+                        cids[cid] = entry
+                    entry["hosts"].add(host_name)
+                    if is_personal_dir:
+                        entry["personal_dir"] = True
+                    if entry["db"] is None or st.st_size > entry["db_sz"]:
+                        entry["db"] = Path(de.path)
+                        entry["db_sz"] = st.st_size
+                        entry["db_mt"] = int(st.st_mtime)
+                        entry["proj"] = dir_proj
+                        entry["dedicated"] = is_dedicated
+        try:
+            b_it = os.scandir(f"{d_str}/brain")
+        except OSError:
+            b_it = None
+        if b_it is not None:
+            with b_it:
+                for de in b_it:
+                    if not de.is_dir(follow_symlinks=False):
+                        continue
+                    cid = de.name
+                    tr_path = f"{de.path}/.system_generated/logs/transcript.jsonl"
+                    try:
+                        st = os.stat(tr_path)
+                    except OSError:
+                        continue
+                    entry = cids.get(cid)
+                    if entry is None:
+                        entry = {
+                            "db": None,
+                            "db_sz": 0,
+                            "db_mt": 0,
+                            "tr": None,
+                            "tr_sz": 0,
+                            "tr_mt": 0,
+                            "proj": dir_proj,
+                            "dedicated": is_dedicated,
+                            "personal_dir": is_personal_dir,
+                            "hosts": set(),
+                        }
+                        cids[cid] = entry
+                    entry["hosts"].add(host_name)
+                    if is_personal_dir:
+                        entry["personal_dir"] = True
+                    if st.st_size > entry["tr_sz"]:
+                        entry["tr"] = Path(tr_path)
+                        entry["tr_sz"] = st.st_size
+                        entry["tr_mt"] = int(st.st_mtime)
+
+    for d, dir_proj, is_dedicated in dirs:
+        is_pers = "personal" in d.name.lower()
+        _register_dir(d, dir_proj, is_dedicated, "james-mbp1", is_personal_dir=is_pers)
+
+    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+    if remote_hosts_root.exists():
+        for host_dir in sorted(remote_hosts_root.iterdir()):
+            if not host_dir.is_dir():
+                continue
+            hname = host_dir.name
+            agy_hdir = host_dir / "agy"
+            if agy_hdir.exists():
+                _register_dir(agy_hdir, pri_p, False, hname, is_personal_dir=False)
+
+    remote_agy_d = Path.home() / ".cache/omarchy/remote-sessions/agy"
+    if remote_agy_d.exists():
+        for f in remote_agy_d.glob("*.db"):
+            cid = f.stem
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            entry = cids.setdefault(
+                cid,
+                {
+                    "db": None,
+                    "db_sz": 0,
+                    "db_mt": 0,
+                    "tr": None,
+                    "tr_sz": 0,
+                    "tr_mt": 0,
+                    "proj": pri_p,
+                    "dedicated": False,
+                    "personal_dir": False,
+                    "hosts": {"remote"},
+                },
+            )
+            if entry["db"] is None or st.st_size > entry["db_sz"]:
+                entry.update({"db": f, "db_sz": st.st_size, "db_mt": int(st.st_mtime)})
 
     new_sc: dict[str, dict] = {}
     dirty = False
     for cid, info in cids.items():
-        sig = f"{info['db_sz']}:{info['db_mt']}:{info['tr_sz']}:{info['tr_mt']}:{info['proj']}:{int(info['dedicated'])}"
+        hosts_sorted = sorted(info["hosts"])
+        sig = f"{info['db_sz']}:{info['db_mt']}:{info['tr_sz']}:{info['tr_mt']}:{info['proj']}:{int(info['dedicated'])}:{int(info['personal_dir'])}:{','.join(hosts_sorted)}"
         if cid in sc and sc[cid].get("sig") == sig:
             new_sc[cid] = sc[cid]
         else:
+            parsed = _parse_session(cid, info["db"], info["tr"], info["proj"], info["dedicated"], sandbox_proj=sb_p)
+            parsed["hosts"] = hosts_sorted
+            parsed["personal_dir"] = bool(info["personal_dir"])
             new_sc[cid] = {
                 "sig": sig,
-                "data": _parse_session(cid, info["db"], info["tr"], info["proj"], info["dedicated"], sandbox_proj=resolve_agy_meta()["sandbox_proj"]),
+                "data": parsed,
             }
             dirty = True
 
-    # Propagate explicit project attribution across parent-child subagent conversation trees
     parent_map: dict[str, str] = {}
     for cid, entry in new_sc.items():
         par = entry["data"].get("parent")
@@ -644,12 +911,17 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
         return curr
 
     tree_proj: dict[str, str] = {}
+    tree_ws: dict[str, str] = {}
     for cid, entry in new_sc.items():
         d = entry["data"]
+        r = get_root(cid)
         if d.get("explicit_proj") and d.get("proj"):
-            r = get_root(cid)
-            if d["proj"] == resolve_agy_meta()["sandbox_proj"] or r not in tree_proj:
+            if d["proj"] == sb_p or r not in tree_proj:
                 tree_proj[r] = d["proj"]
+        ws_val = d.get("ws")
+        if ws_val and ws_val != "global":
+            if cid == r or r not in tree_ws:
+                tree_ws[r] = ws_val
 
     for cid, entry in new_sc.items():
         d = entry["data"]
@@ -658,10 +930,33 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
             if d.get("proj") != tree_proj[r]:
                 d["proj"] = tree_proj[r]
                 dirty = True
+        if (not d.get("ws") or d.get("ws") == "global") and r in tree_ws:
+            if d.get("ws") != tree_ws[r]:
+                d["ws"] = tree_ws[r]
+                dirty = True
 
-    if dirty or len(new_sc) != len(sc):
+        # Classify session into profile_id: agy-personal, agy (Corp), or agy-sandbox
+        c_proj = d.get("proj") or pri_p
+        c_ws = d.get("ws") or "global"
+        c_hosts = set(d.get("hosts") or [])
+        is_clover = _is_clover_workspace(c_ws) or (bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"}))
+        if d.get("personal_dir"):
+            prof_id = "agy-personal"
+        elif is_clover:
+            prof_id = "agy-sandbox" if c_proj == sb_p else "agy"
+        else:
+            prof_id = "agy-personal"
+            if c_proj == sb_p and not d.get("dedicated"):
+                d["proj"] = pri_p
+                dirty = True
+
+        if d.get("profile_id") != prof_id:
+            d["profile_id"] = prof_id
+            dirty = True
+
+    if dirty or migrated_schema or len(new_sc) != len(sc):
         try:
-            sc_p.write_text(json.dumps({"__schema__": 3, "sessions": new_sc}), encoding="utf-8")
+            sc_p.write_text(json.dumps({"__schema__": 6, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
         except Exception:
             pass
 
@@ -681,6 +976,7 @@ def _build_agy_record(
     all_proj_breakdown: list[dict],
     family_summary: dict,
     aggregated: bool,
+    target_profile_ids: set[str] | None = None,
 ) -> dict:
     now = datetime.now()
     today_s = now.strftime("%Y-%m-%d")
@@ -695,17 +991,28 @@ def _build_agy_record(
     sessions_by_day: dict[str, set[str]] = defaultdict(set)
     prompts_by_day: dict[str, int] = defaultdict(int)
     local_day_mod: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0, 0]))
-    ws_stats: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "prompts": 0, "sessions": set(), "last": ""})
+    ws_stats: dict[str, dict] = defaultdict(
+        lambda: {"tokens": 0, "costUsd": 0.0, "costUsd7d": 0.0, "costUsdToday": 0.0, "prompts": 0, "sessions": set(), "last": ""}
+    )
+    host_stats: dict[str, dict] = defaultdict(
+        lambda: {"tokens30d": 0, "costUsd30d": 0.0, "costUsd7d": 0.0, "costUsdToday": 0.0, "prompts30d": 0, "sessions30d": set()}
+    )
     tok_5h = 0
     all_time_tokens = 0
     all_time_cost = 0.0
     recent_convs = []
     sessions_7d: set[str] = set()
 
+    meta = resolve_agy_meta()
+
     for cid, entry in sessions_map.items():
         d = entry["data"]
-        c_proj = d.get("proj") or resolve_agy_meta()["primary_proj"]
-        if target_projects is not None and c_proj not in target_projects:
+        c_proj = d.get("proj") or meta["primary_proj"]
+        c_prof = d.get("profile_id") or ("agy-sandbox" if c_proj == meta["sandbox_proj"] else "agy")
+        if target_profile_ids is not None:
+            if c_prof not in target_profile_ids:
+                continue
+        elif target_projects is not None and c_proj not in target_projects:
             continue
 
         is_sub = bool(d.get("parent"))
@@ -716,71 +1023,106 @@ def _build_agy_record(
         total_steps += d.get("steps", 0)
         total_tools += d.get("tools", 0)
         ws = d.get("ws") or "global"
+        c_hosts = d.get("hosts") or ["james-mbp1"]
+        c_hosts_set = set(c_hosts)
+        if len(c_hosts_set) == 1:
+            primary_host = next(iter(c_hosts_set))
+        elif c_hosts_set.issubset({"netctl1", "netctl2"}):
+            primary_host = "netctl1" if "netctl1" in c_hosts_set else "netctl2"
+        elif ws in ("controller-ai-ops", "ai-ops", "smarthome-ai-ops") and "controller" in c_hosts_set:
+            primary_host = "james-mbp1 + controller"
+        elif _is_clover_workspace(ws) and ("netctl1" in c_hosts_set or "netctl2" in c_hosts_set):
+            primary_host = "james-mbp1 + netctl1/2"
+        elif "james-mbp1" in c_hosts_set:
+            primary_host = "james-mbp1"
+        else:
+            primary_host = c_hosts[0]
+
         c_tok = 0
         c_cost = 0.0
         c_mod = "gemini-3.1-pro-high"
         c_in_30d = False
 
+        ws_entry = ws_stats[ws]
+        host_entry = host_stats[primary_host]
+        c_in_7d = False
+
         for ev in d.get("events", []):
-            ts, et, mod, it, ot, ct = ev
+            ts, et, mod, it, ot, ct = ev[:6]
             if not ts:
                 continue
             day = _ts_to_day(ts)
             if et == "p":
-                prompts_all += 1
+                p_cnt = it if it > 0 else 1
+                prompts_all += p_cnt
                 if day >= cut_30d:
                     c_in_30d = True
-                    prompts_by_day[day] += 1
-                    prompts_30d += 1
-                    ws_stats[ws]["prompts"] += 1
+                    prompts_by_day[day] += p_cnt
+                    prompts_30d += p_cnt
+                    ws_entry["prompts"] += p_cnt
                     sessions_by_day[day].add(cid)
-                    ws_stats[ws]["sessions"].add(cid)
-                    if day > ws_stats[ws]["last"]:
-                        ws_stats[ws]["last"] = day
+                    host_entry["prompts30d"] += p_cnt
+                    if day > ws_entry["last"]:
+                        ws_entry["last"] = day
                     if day >= cut_7d:
-                        prompts_7d += 1
-                        sessions_7d.add(cid)
+                        prompts_7d += p_cnt
+                        c_in_7d = True
                     if day == today_s:
-                        today_prompts += 1
-            elif et == "sub" and day == today_s:
-                today_sub_calls += 1
+                        today_prompts += p_cnt
             elif et == "u":
                 tot = it + ot + ct
                 ci, co, cc = _cost_rates(mod)
                 ev_cost = (it * ci + ot * co + ct * cc) / 1e6
-                c_tok += tot
-                c_cost += ev_cost
                 all_time_tokens += tot
                 all_time_cost += ev_cost
-                c_mod = mod
+                c_tok += tot
+                c_cost += ev_cost
+                if mod:
+                    c_mod = mod
+                if ts >= cut_5h:
+                    tok_5h += tot
                 if day >= cut_30d:
                     c_in_30d = True
+                    b = local_day_mod[day][c_mod]
+                    b[0] += it
+                    b[1] += ot
+                    b[2] += ct
+                    ws_entry["tokens"] += tot
+                    ws_entry["costUsd"] += ev_cost
                     sessions_by_day[day].add(cid)
-                    ws_stats[ws]["sessions"].add(cid)
-                    if day > ws_stats[ws]["last"]:
-                        ws_stats[ws]["last"] = day
-                    local_day_mod[day][mod][0] += it
-                    local_day_mod[day][mod][1] += ot
-                    local_day_mod[day][mod][2] += ct
-                    ws_stats[ws]["tokens"] += tot
+                    host_entry["tokens30d"] += tot
+                    host_entry["costUsd30d"] += ev_cost
+                    if day > ws_entry["last"]:
+                        ws_entry["last"] = day
                     if day >= cut_7d:
-                        sessions_7d.add(cid)
-                    if ts >= cut_5h:
-                        tok_5h += tot
-                    if is_sub and day == today_s:
-                        today_sub_tokens += tot
+                        c_in_7d = True
+                        ws_entry["costUsd7d"] += ev_cost
+                        host_entry["costUsd7d"] += ev_cost
+                    if day == today_s:
+                        ws_entry["costUsdToday"] += ev_cost
+                        host_entry["costUsdToday"] += ev_cost
+                        if is_sub:
+                            today_sub_tokens += tot
 
         if c_in_30d:
+            ws_entry["sessions"].add(cid)
+            host_entry["sessions30d"].add(cid)
+            if c_in_7d:
+                sessions_7d.add(cid)
             if is_sub:
                 sub_convs_30d += 1
             else:
                 root_convs_30d += 1
-        if not is_sub and c_tok > 0:
+
+        if not is_sub and (c_tok > 0 or d.get("steps", 0) > 0):
             recent_convs.append(
                 {
-                    "id": cid,
-                    "title": f"{ws} ({cid[:8]})",
-                    "prompts": d.get("prompts", 0),
+                    "id": cid[:8],
+                    "workspace": ws,
+                    "host": primary_host,
+                    "profileId": c_prof,
+                    "steps": d.get("steps", 0),
+                    "toolCalls": d.get("tools", 0),
                     "model": c_mod,
                     "tokens": c_tok,
                     "costUsd": round(c_cost, 2),
@@ -788,7 +1130,7 @@ def _build_agy_record(
                     "ts": d.get("ts", 0),
                 }
             )
-        if is_sub and d.get("ts", 0) > 0 and datetime.fromtimestamp(d["ts"]).strftime("%Y-%m-%d") == today_s:
+        if is_sub and d.get("ts", 0) > 0 and _ts_to_day(d["ts"]) == today_s:
             today_sub_calls += 1
 
     recent_convs.sort(key=lambda x: -x["ts"])
@@ -882,8 +1224,6 @@ def _build_agy_record(
     c_req_7d = sum(pb["requests7d"] for pb in scoped_breakdown)
     c_req_today = sum(pb["requestsToday"] for pb in scoped_breakdown)
 
-    # When aggregated across multiple projects, provide a single combined entry in projectsBreakdown
-    # so Main.qml does not trigger fallback split-synthesis on an intentionally aggregated record.
     if aggregated and len(scoped_breakdown) > 1:
         projects_breakdown_field = [
             {
@@ -913,24 +1253,45 @@ def _build_agy_record(
     ws_list = [
         {
             "workspace": k,
+            "category": "work" if _is_clover_workspace(k) else "personal",
             "tokens": v["tokens"],
+            "costUsd": round(v["costUsd"], 2),
+            "costUsd7d": round(v["costUsd7d"], 2),
+            "costUsdToday": round(v["costUsdToday"], 2),
             "prompts": v["prompts"],
             "sessions": len(v["sessions"]),
             "lastActive": v["last"],
         }
-        for k, v in sorted(ws_stats.items(), key=lambda x: -x[1]["tokens"])[:12]
+        for k, v in sorted(ws_stats.items(), key=lambda x: -x[1]["costUsd"])[:14]
+    ]
+
+    hosts_list = [
+        {
+            "host": k,
+            "tokens30d": v["tokens30d"],
+            "costUsd30d": round(v["costUsd30d"], 2),
+            "costUsd7d": round(v["costUsd7d"], 2),
+            "costUsdToday": round(v["costUsdToday"], 2),
+            "prompts30d": v["prompts30d"],
+            "sessions30d": len(v["sessions30d"]),
+        }
+        for k, v in sorted(host_stats.items(), key=lambda x: -x[1]["costUsd30d"])
     ]
 
     st_p = (
         Path.home() / ".gemini/antigravity-cli-sandbox/settings.json"
         if record_id == "agy-sandbox"
-        else Path.home() / ".gemini/antigravity-cli/settings.json"
+        else (
+            Path.home() / ".gemini/antigravity-cli-personal/settings.json"
+            if record_id == "agy-personal"
+            else Path.home() / ".gemini/antigravity-cli/settings.json"
+        )
     )
     st_cfg = json.loads(st_p.read_text(encoding="utf-8")) if st_p.exists() else {}
     act_mod = st_cfg.get("model", "gemini-3.1-pro-high")
     if model_quotas:
         act_mod = model_quotas[0]["model"]
-    pri_proj = scoped_projs[0] if scoped_projs else resolve_agy_meta()["primary_proj"]
+    pri_proj = scoped_projs[0] if scoped_projs else meta["primary_proj"]
     loc = st_cfg.get("gcp", {}).get("location", "global")
     peak_rpm = max((pb["peakRpm"] for pb in scoped_breakdown), default=0)
     quota_rpm = max((pb["quotaLimitRpm"] for pb in scoped_breakdown), default=30000)
@@ -942,6 +1303,19 @@ def _build_agy_record(
     rpm_pct = min(100.0, round(peak_rpm * 100.0 / max(1, quota_rpm), 1))
 
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    if record_id == "agy-personal":
+        tier_prefix = "Personal / Homelab / Census"
+        auth_mode_str = "Google AI / Personal Profile"
+        auth_help_str = "Personal, Homelab & Census usage across james-mbp1, controller, and gpu01 (`agy-personal`)."
+    elif record_id == "agy-sandbox":
+        tier_prefix = f"Vertex AI ({badge})"
+        auth_mode_str = "Vertex AI Sandbox"
+        auth_help_str = "Clover/Fiserv Sandbox usage on clover-sandbox (`agy-sandbox`)."
+    else:
+        tier_prefix = f"Vertex AI ({badge})"
+        auth_mode_str = "Vertex AI Corp"
+        auth_help_str = "Clover/Fiserv Corporate usage across james-mbp1, netctl1, and netctl2 (`agy-clover`)."
 
     return {
         "schemaVersion": 1,
@@ -956,8 +1330,8 @@ def _build_agy_record(
         "shortLabel": short_label,
         "displayName": display_name,
         "badge": badge,
-        "executionScope": "localhost",
-        "localhostOnly": True,
+        "executionScope": "multi-host",
+        "localhostOnly": False,
         "aggregated": aggregated,
         "status": "online",
         "scope": "account",
@@ -970,10 +1344,10 @@ def _build_agy_record(
         "project": pri_proj,
         "projects": scoped_projs,
         "location": loc,
-        "authMode": "Vertex AI + Cloud Monitoring",
-        "tierLabel": f"Vertex AI ({badge}) · Today ${today_cost:,.2f} · 7d ${cost_7d:,.2f} · 30d ${total_cost_30d:,.2f}",
+        "authMode": auth_mode_str,
+        "tierLabel": f"{tier_prefix} · Today ${today_cost:,.2f} · 7d ${cost_7d:,.2f} · 30d ${total_cost_30d:,.2f}",
         "usageStatusText": "",
-        "authHelpText": "Personal usage from local AGY sessions on localhost; GCP project telemetry shows shared org-wide quota.",
+        "authHelpText": auth_help_str,
         "limits": [
             {"label": "Session (5-hour)", "percent": round(five_pct / 100.0, 4), "resetsAt": ""},
             {"label": "Weekly (7-day)", "percent": round(seven_pct / 100.0, 4), "resetsAt": ""},
@@ -1016,10 +1390,11 @@ def _build_agy_record(
         "modelUsage": model_usage,
         "modelQuotas": model_quotas,
         "workspaceUsage": ws_list,
+        "hostsBreakdown": hosts_list,
         "recentConversations": recent_convs[:10],
         "projectsBreakdown": projects_breakdown_field,
         "allProjectsBreakdown": all_proj_breakdown,
-        "profilesSummary": all_proj_breakdown,
+        "profilesSummary": family_summary.get("profiles", all_proj_breakdown),
         "aggregation": family_summary,
         "groupTotals": family_summary,
         "cloudUsage": {
@@ -1046,7 +1421,7 @@ def _build_agy_record(
 
 
 def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None, rebuild_cache: bool = False) -> dict[str, dict]:
-    """Scan local AGY sessions once and build both split (`agy`, `agy-sandbox`) and combined (`all`) records."""
+    """Scan local + remote AGY sessions once and build split (`agy-personal`, `agy`, `agy-sandbox`) and combined (`all`) records."""
     if split_profiles is None:
         split_profiles = is_agy_split_enabled()
 
@@ -1060,8 +1435,8 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
     cut_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d")
     cut_7d = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    local_proj_stats: dict[str, dict] = defaultdict(
-        lambda: {
+    def _new_stat_bucket():
+        return {
             "tokens30d": 0,
             "tokens7d": 0,
             "tokensToday": 0,
@@ -1075,41 +1450,64 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
             "sessions30d": set(),
             "sessionsToday": set(),
         }
-    )
+
+    local_proj_stats: dict[str, dict] = defaultdict(_new_stat_bucket)
+    prof_stats: dict[str, dict] = defaultdict(_new_stat_bucket)
 
     for cid, entry in sessions_map.items():
         d = entry["data"]
-        c_proj = d.get("proj") or resolve_agy_meta()["primary_proj"]
+        c_proj = d.get("proj") or meta["primary_proj"]
+        c_prof = d.get("profile_id") or ("agy-sandbox" if c_proj == meta["sandbox_proj"] else "agy")
         lp = local_proj_stats[c_proj]
+        pp = prof_stats[c_prof]
+        s_30d = False
+        s_today = False
         for ev in d.get("events", []):
-            ts, et, mod, it, ot, ct = ev
+            ts, et, mod, it, ot, ct = ev[:6]
             if not ts:
                 continue
             day = _ts_to_day(ts)
             if et == "p":
+                p_cnt = it if it > 0 else 1
                 if day >= cut_30d:
-                    lp["prompts30d"] += 1
-                    lp["sessions30d"].add(cid)
+                    s_30d = True
+                    lp["prompts30d"] += p_cnt
+                    pp["prompts30d"] += p_cnt
                     if day == today_s:
-                        lp["promptsToday"] += 1
-                        lp["sessionsToday"].add(cid)
+                        s_today = True
+                        lp["promptsToday"] += p_cnt
+                        pp["promptsToday"] += p_cnt
             elif et == "u":
                 tot = it + ot + ct
                 ci, co, cc = _cost_rates(mod)
                 ev_cost = (it * ci + ot * co + ct * cc) / 1e6
                 lp["allTimeTokens"] += tot
                 lp["allTimeCost"] += ev_cost
+                pp["allTimeTokens"] += tot
+                pp["allTimeCost"] += ev_cost
                 if day >= cut_30d:
+                    s_30d = True
                     lp["tokens30d"] += tot
                     lp["cost30d"] += ev_cost
-                    lp["sessions30d"].add(cid)
+                    pp["tokens30d"] += tot
+                    pp["cost30d"] += ev_cost
                     if day >= cut_7d:
                         lp["tokens7d"] += tot
                         lp["cost7d"] += ev_cost
+                        pp["tokens7d"] += tot
+                        pp["cost7d"] += ev_cost
                     if day == today_s:
+                        s_today = True
                         lp["tokensToday"] += tot
                         lp["costToday"] += ev_cost
-                        lp["sessionsToday"].add(cid)
+                        pp["tokensToday"] += tot
+                        pp["costToday"] += ev_cost
+        if s_30d:
+            lp["sessions30d"].add(cid)
+            pp["sessions30d"].add(cid)
+            if s_today:
+                lp["sessionsToday"].add(cid)
+                pp["sessionsToday"].add(cid)
 
     all_proj_breakdown = []
     c_tok_30d_all = 0
@@ -1182,9 +1580,43 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
     for pb in all_proj_breakdown:
         pb["sharePct"] = round(pb["localTokens30d"] * 100.0 / tot_local_30d, 1) if tot_local_30d else 0.0
 
+    sb_proj = meta["sandbox_proj"]
+    pri_proj = meta["primary_proj"]
+    pers_proj = meta["personal_proj"]
+
+    profiles_summary_list = []
+    for pid, pproj, plabel in [
+        ("agy-personal", pers_proj, "Personal / Homelab / Census"),
+        ("agy", pri_proj, "Clover / Fiserv Corp"),
+        ("agy-sandbox", sb_proj, "Clover / Fiserv Sandbox"),
+    ]:
+        ps = prof_stats[pid]
+        profiles_summary_list.append(
+            {
+                "id": pid,
+                "label": plabel,
+                "project": pproj,
+                "tokens30d": ps["tokens30d"],
+                "tokens7d": ps["tokens7d"],
+                "tokensToday": ps["tokensToday"],
+                "costUsd30d": round(ps["cost30d"], 2),
+                "costUsd7d": round(ps["cost7d"], 2),
+                "costUsdToday": round(ps["costToday"], 2),
+                "prompts30d": ps["prompts30d"],
+                "sessions30d": len(ps["sessions30d"]),
+            }
+        )
+
+    work_cost_30d = round(prof_stats["agy"]["cost30d"] + prof_stats["agy-sandbox"]["cost30d"], 2)
+    work_cost_7d = round(prof_stats["agy"]["cost7d"] + prof_stats["agy-sandbox"]["cost7d"], 2)
+    work_cost_today = round(prof_stats["agy"]["costToday"] + prof_stats["agy-sandbox"]["costToday"], 2)
+    pers_cost_30d = round(prof_stats["agy-personal"]["cost30d"], 2)
+    pers_cost_7d = round(prof_stats["agy-personal"]["cost7d"], 2)
+    pers_cost_today = round(prof_stats["agy-personal"]["costToday"], 2)
+
     family_summary = {
         "family": "agy",
-        "executionScope": "localhost",
+        "executionScope": "multi-host",
         "splitProfiles": bool(split_profiles),
         "tokens30d": sum(pb["localTokens30d"] for pb in all_proj_breakdown),
         "tokens7d": sum(pb["localTokens7d"] for pb in all_proj_breakdown),
@@ -1194,33 +1626,38 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         "costUsd7d": round(sum(pb["localCostUsd7d"] for pb in all_proj_breakdown), 2),
         "costUsdToday": round(sum(pb["localCostUsdToday"] for pb in all_proj_breakdown), 2),
         "allTimeCostUsd": round(sum(pb["localAllTimeCostUsd"] for pb in all_proj_breakdown), 2),
+        "workCostUsd30d": work_cost_30d,
+        "workCostUsd7d": work_cost_7d,
+        "workCostUsdToday": work_cost_today,
+        "personalCostUsd30d": pers_cost_30d,
+        "personalCostUsd7d": pers_cost_7d,
+        "personalCostUsdToday": pers_cost_today,
         "prompts30d": sum(pb["localPrompts30d"] for pb in all_proj_breakdown),
         "promptsToday": sum(pb["localPromptsToday"] for pb in all_proj_breakdown),
         "sessions30d": sum(pb["localSessions30d"] for pb in all_proj_breakdown),
         "sessionsToday": sum(pb["localSessionsToday"] for pb in all_proj_breakdown),
         "sharedOrgTokens30d": c_tok_30d_all,
-        "profiles": [
-            {
-                "id": pb["profileId"],
-                "project": pb["project"],
-                "tokens30d": pb["localTokens30d"],
-                "tokens7d": pb["localTokens7d"],
-                "tokensToday": pb["localTokensToday"],
-                "costUsd30d": pb["localCostUsd30d"],
-                "costUsd7d": pb["localCostUsd7d"],
-                "costUsdToday": pb["localCostUsdToday"],
-                "prompts30d": pb["localPrompts30d"],
-                "sessions30d": pb["localSessions30d"],
-            }
-            for pb in all_proj_breakdown
-        ],
+        "profiles": profiles_summary_list,
     }
 
-    sb_proj = meta["sandbox_proj"]
-    pri_proj = meta["primary_proj"]
     corp_projects = {p for p in projects if p != sb_proj} or {pri_proj}
     sandbox_projects = {sb_proj}
 
+    rec_personal = _build_agy_record(
+        record_id="agy-personal",
+        profile_name=meta["personal_label"],
+        display_name=meta["personal_display"],
+        short_label=meta["personal_short"],
+        badge=meta["personal_badge"],
+        target_projects=corp_projects,
+        sessions_map=sessions_map,
+        all_projects=projects,
+        cloud=cloud,
+        all_proj_breakdown=all_proj_breakdown,
+        family_summary=family_summary,
+        aggregated=False,
+        target_profile_ids={"agy-personal"},
+    )
     rec_corp = _build_agy_record(
         record_id="agy",
         profile_name=meta["primary_label"],
@@ -1234,6 +1671,7 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         all_proj_breakdown=all_proj_breakdown,
         family_summary=family_summary,
         aggregated=False,
+        target_profile_ids={"agy"},
     )
     rec_sandbox = _build_agy_record(
         record_id="agy-sandbox",
@@ -1248,26 +1686,33 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
         all_proj_breakdown=all_proj_breakdown,
         family_summary=family_summary,
         aggregated=False,
+        target_profile_ids={"agy-sandbox"},
     )
-    rec_all = _build_agy_record(
-        record_id="agy",
-        profile_name="Antigravity",
-        display_name="AGY (Antigravity)",
-        short_label="AGY",
-        badge="all",
-        target_projects=None,
-        sessions_map=sessions_map,
-        all_projects=projects,
-        cloud=cloud,
-        all_proj_breakdown=all_proj_breakdown,
-        family_summary=family_summary,
-        aggregated=True,
+    rec_all = (
+        rec_corp
+        if split_profiles
+        else _build_agy_record(
+            record_id="agy",
+            profile_name="Antigravity",
+            display_name="AGY (Antigravity)",
+            short_label="AGY",
+            badge="all",
+            target_projects=None,
+            sessions_map=sessions_map,
+            all_projects=projects,
+            cloud=cloud,
+            all_proj_breakdown=all_proj_breakdown,
+            family_summary=family_summary,
+            aggregated=True,
+            target_profile_ids=None,
+        )
     )
 
     return {
         "agy": rec_corp if split_profiles else rec_all,
         "agy-corp": rec_corp,
         "agy-sandbox": rec_sandbox,
+        "agy-personal": rec_personal,
         "all": rec_all,
         "summary": family_summary,
     }
@@ -1275,7 +1720,11 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
 
 def collect_agy_data(force: bool = False, profile: str | None = None, split_profiles: bool | None = None) -> dict:
     meta = resolve_agy_meta()
+    if profile == "all":
+        split_profiles = False
     profiles = collect_agy_profiles(force=force, split_profiles=split_profiles)
+    if profile in ("agy-personal", meta["personal_proj"], "personal"):
+        return profiles["agy-personal"]
     if profile in ("agy-sandbox", meta["sandbox_proj"], "sandbox"):
         return profiles["agy-sandbox"]
     if profile in ("agy-corp", meta["primary_proj"], "primary", "corp"):
@@ -1288,28 +1737,16 @@ def collect_agy_data(force: bool = False, profile: str | None = None, split_prof
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Collect AGY usage telemetry.")
     parser.add_argument("--force", action="store_true", help="Force refresh")
-    parser.add_argument("--rebuild-cache", action="store_true", help="Rebuild SQLite session scan cache")
-    parser.add_argument("--refresh-cloud-only", action="store_true", help="Refresh Cloud Monitoring cache and exit")
-    parser.add_argument("--profile", default=None, help="Profile to emit (agy, agy-sandbox, all)")
-    parser.add_argument("--project", default=None, help="GCP project filter")
+    parser.add_argument("--refresh-cloud-only", action="store_true", help="Refresh cloud monitoring cache only and exit")
+    parser.add_argument("--rebuild-cache", action="store_true", help="Rebuild local session cache")
+    parser.add_argument("--profile", type=str, default=None, help="Target profile (agy, agy-personal, agy-sandbox, all)")
     parser.add_argument("--split-profiles", action="store_true", help="Force split-profile mode")
+    parser.add_argument("--no-split-profiles", action="store_true", help="Force aggregated single-profile mode")
     args, _ = parser.parse_known_args()
-
     if args.refresh_cloud_only:
         _, projs = discover_agy_config()
-        get_cloud_metrics(projs, force=True, refresh_cloud_sync=True)
+        get_cloud_metrics(projs, refresh_cloud_sync=True)
         sys.exit(0)
-
-    meta = resolve_agy_meta()
-    target_prof = args.profile or args.project
-    split = True if (args.split_profiles or target_prof in ("agy-sandbox", meta["sandbox_proj"], meta["primary_proj"], "sandbox", "primary")) else None
-    profs = collect_agy_profiles(force=args.force, split_profiles=split, rebuild_cache=args.rebuild_cache)
-    if target_prof in ("agy-sandbox", meta["sandbox_proj"], "sandbox"):
-        out = profs["agy-sandbox"]
-    elif target_prof in ("agy-corp", meta["primary_proj"], "primary", "corp"):
-        out = profs["agy-corp"]
-    elif target_prof == "all":
-        out = profs["all"]
-    else:
-        out = profs["agy"]
-    print(json.dumps(out, indent=2))
+    split_mode = True if args.split_profiles else (False if args.no_split_profiles else None)
+    data = collect_agy_data(force=args.force, profile=args.profile, split_profiles=split_mode)
+    print(json.dumps(data, indent=2))

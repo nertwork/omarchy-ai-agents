@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Fast background incremental sync of AI agent sessions from controller, gpu01, netctl1, netctl2
+set -u
+
+CACHE_ROOT="${HOME}/.cache/omarchy/remote-sessions/hosts"
+STAMP_FILE="${CACHE_ROOT}/.last_sync"
+LOCK_FILE="${CACHE_ROOT}/.sync.lock"
+SYNC_TTL=300
+mkdir -p "$CACHE_ROOT"
+
+FORCE="${1:-}"
+NOW=$(date +%s)
+if [[ "$FORCE" != "--force" && -f "$STAMP_FILE" ]]; then
+  LAST=$(cat "$STAMP_FILE" 2>/dev/null || echo 0)
+  if (( NOW - LAST < SYNC_TTL )); then
+    exit 0
+  fi
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  exit 0
+fi
+
+date +%s > "$STAMP_FILE"
+
+for h in controller gpu01 netctl1 netctl2; do
+  mkdir -p "${CACHE_ROOT}/${h}/agy" "${CACHE_ROOT}/${h}/claude"
+  (
+    rsync -az --timeout=4 -e "ssh -o BatchMode=yes -o ConnectTimeout=2" \
+      "${h}:.gemini/antigravity-cli*/conversations/*.db" \
+      "${CACHE_ROOT}/${h}/agy/" >/dev/null 2>&1 || true
+    rsync -az --timeout=4 -e "ssh -o BatchMode=yes -o ConnectTimeout=2" \
+      --include="*/" --include="*.jsonl" --exclude="*" \
+      "${h}:.claude*/" \
+      "${CACHE_ROOT}/${h}/claude/" >/dev/null 2>&1 || true
+  ) &
+done
+wait

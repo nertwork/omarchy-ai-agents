@@ -11,10 +11,12 @@
   "clonedFrom": "omarchy.agents",
   "icon": "\udb85\udea3",
   "kinds": [
+    "service",
     "bar-widget"
   ],
   "minOmarchyVersion": "4.0.0",
   "entryPoints": {
+    "service": "Main.qml",
     "main": "Main.qml",
     "barWidget": "Panel.qml",
     "settings": "Settings.qml",
@@ -27,7 +29,7 @@
     ]
   },
   "defaultSettings": {
-    "localhostOnly": true,
+    "localhostOnly": false,
     "aggregateByDefault": true,
     "showAggregatedSummary": true,
     "barDisplayMode": "aggregated",
@@ -36,10 +38,15 @@
     "pollIntervalSeconds": 300,
     "terminalCommand": "",
     "providers": {
+      "agy-personal": {
+        "enabled": true,
+        "profile": "personal",
+        "label": "AGY Personal"
+      },
       "agy": {
         "enabled": true,
         "profile": "default",
-        "label": "AGY"
+        "label": "AGY Corp"
       },
       "agy-sandbox": {
         "enabled": false,
@@ -92,11 +99,16 @@
         "enabled": false,
         "label": "Fireworks"
       }
-    }
+    },
+    "enabledAgents": [
+      "agy-personal",
+      "agy",
+      "claude"
+    ]
   },
   "barWidget": {
     "defaults": {
-      "localhostOnly": true,
+      "localhostOnly": false,
       "aggregateByDefault": true,
       "showAggregatedSummary": true,
       "barDisplayMode": "aggregated",
@@ -105,14 +117,20 @@
       "pollIntervalSeconds": 300,
       "terminalCommand": "",
       "enabledAgents": [
+        "agy-personal",
         "agy",
         "claude"
       ],
       "providers": {
+        "agy-personal": {
+          "enabled": true,
+          "profile": "personal",
+          "label": "AGY Personal"
+        },
         "agy": {
           "enabled": true,
           "profile": "default",
-          "label": "AGY"
+          "label": "AGY Corp"
         },
         "agy-sandbox": {
           "enabled": false,
@@ -172,7 +190,7 @@
         "key": "localhostOnly",
         "label": "Localhost-only collection",
         "type": "bool",
-        "default": true
+        "default": false
       },
       {
         "key": "aggregateByDefault",

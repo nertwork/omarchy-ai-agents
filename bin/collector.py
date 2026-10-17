@@ -98,17 +98,25 @@ def remove_state_file(agent_id: str) -> None:
         p.unlink(missing_ok=True)
 
 
+_SETTINGS_CACHE: dict | None = None
+
+
 def load_settings() -> dict:
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
     state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     settings_path = state_home / "omarchy" / "settings" / "nertwork.agents.json"
     if settings_path.exists():
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                _SETTINGS_CACHE = data
                 return data
         except Exception:
             pass
-    return {}
+    _SETTINGS_CACHE = {}
+    return _SETTINGS_CACHE
 
 
 def is_provider_enabled(provider_id: str, default: bool = False) -> bool:
@@ -190,15 +198,32 @@ def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claud
         "thirtyDaySessions": agy_sum["thirtyDaySessions"] + claude_sum["thirtyDaySessions"],
     })
     profiles_list = list(agy_sum.get("profiles", [])) + list(claude_sum.get("profiles", []))
+    fiserv_c_prof = next((p for p in claude_sum.get("profiles", []) if p.get("id") == "fiserv-claude"), {})
+    pers_c_prof = next((p for p in claude_sum.get("profiles", []) if p.get("id") == "claude"), {})
+    work_30d = round(float(agy_sum.get("workCostUsd30d", 0.0)) + float(fiserv_c_prof.get("costUsd30d", 0.0)), 2)
+    work_7d = round(float(agy_sum.get("workCostUsd7d", 0.0)) + float(fiserv_c_prof.get("costUsd7d", 0.0)), 2)
+    work_today = round(float(agy_sum.get("workCostUsdToday", 0.0)) + float(fiserv_c_prof.get("costUsdToday", 0.0)), 2)
+    pers_30d = round(float(agy_sum.get("personalCostUsd30d", 0.0)) + float(pers_c_prof.get("costUsd30d", 0.0)), 2)
+    pers_7d = round(float(agy_sum.get("personalCostUsd7d", 0.0)) + float(pers_c_prof.get("costUsd7d", 0.0)), 2)
+    pers_today = round(float(agy_sum.get("personalCostUsdToday", 0.0)) + float(pers_c_prof.get("costUsdToday", 0.0)), 2)
+
     return {
         "schemaVersion": 2,
         "updatedAt": now_iso,
-        "executionScope": "localhost",
-        "localhostOnly": True,
+        "executionScope": "multi-host",
+        "localhostOnly": False,
         "splitProfiles": bool(agy_split or claude_split),
         "agySplitProfiles": bool(agy_split),
         "claudeSplitProfiles": bool(claude_split),
         "grandTotal": grand_total,
+        "workVsPersonal": {
+            "workCostUsd30d": work_30d,
+            "workCostUsd7d": work_7d,
+            "workCostUsdToday": work_today,
+            "personalCostUsd30d": pers_30d,
+            "personalCostUsd7d": pers_7d,
+            "personalCostUsdToday": pers_today,
+        },
         "groups": {
             "agy": agy_sum,
             "claude": claude_sum,
@@ -251,6 +276,8 @@ def collect_agy_and_claude(
             if want_agy:
                 rec_agy = _enrich_record_with_summary(agy_profiles["agy"], agy_sum, grand_summary)
                 write_state_file("agy", rec_agy)
+                rec_pers = _enrich_record_with_summary(agy_profiles["agy-personal"], agy_sum, grand_summary)
+                write_state_file("agy-personal", rec_pers)
             if want_agy_sandbox is not False:
                 rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
                 write_state_file("agy-sandbox", rec_sb)
@@ -262,6 +289,7 @@ def collect_agy_and_claude(
                 write_state_file("agy-sandbox", rec_sb)
             else:
                 remove_state_file("agy-sandbox")
+                remove_state_file("agy-personal")
 
     if want_claude or want_fiserv_claude:
         if claude_split:
@@ -289,9 +317,7 @@ def collect_agy_and_claude(
 # =============================================================================
 
 def collect_codex(force: bool = False):
-    usage_dir = get_usage_dir()
-    codex_file = usage_dir / "codex.json"
-    if not force and not is_provider_enabled("codex", default=False) and codex_file.exists():
+    if not is_provider_enabled("codex", default=False):
         return
 
     codex_cmd = shutil.which("codex")
@@ -314,21 +340,9 @@ def collect_codex(force: bool = False):
     }
 
     if not codex_cmd:
-        result["usageStatusText"] = "Codex unavailable"
-        result["authHelpText"] = "codex not found in PATH"
-        record = {
-            "schemaVersion": 1,
-            "id": "codex",
-            "name": "Codex",
-            "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "ready": False,
-            "hasLocalStats": False,
-        }
-        record.update(result)
-        write_state_file("codex", record)
-        return
-
-    if is_provider_enabled("codex", default=False) or force:
+        result["usageStatusText"] = "Local + remote session history"
+        result["authHelpText"] = "codex CLI not installed on this host; showing synced session stats."
+    elif is_provider_enabled("codex", default=False) or force:
         proc = None
         try:
             proc = subprocess.Popen(
@@ -403,16 +417,66 @@ def collect_codex(force: bool = False):
         except Exception:
             pass
 
+    # Scan local + synced remote .codex/sessions/*.jsonl for full all-time token & cost telemetry
+    codex_files = {}
+    for root in (
+        Path.home() / ".codex/sessions",
+        Path.home() / ".cache/omarchy/remote-sessions/codex",
+        Path.home() / "migration-staging/.codex/sessions",
+    ):
+        if root.is_dir():
+            for jf in root.rglob("*.jsonl"):
+                codex_files.setdefault(jf.name, jf)
+    all_time_tok = all_time_in = all_time_cache = all_time_out = all_time_prompts = 0
+    for jf in codex_files.values():
+        max_tot = 0
+        last_u = None
+        try:
+            for ln in jf.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not ln.strip():
+                    continue
+                o = json.loads(ln)
+                if o.get("type") == "event_msg":
+                    p = o.get("payload") or {}
+                    if p.get("type") == "user_message":
+                        all_time_prompts += 1
+                    elif p.get("type") == "token_count":
+                        tot_u = (p.get("info") or {}).get("total_token_usage") or {}
+                        t = int(tot_u.get("total_tokens", 0) or 0)
+                        if t >= max_tot:
+                            max_tot = t
+                            last_u = tot_u
+        except Exception:
+            pass
+        if last_u:
+            it = int(last_u.get("input_tokens", 0) or 0)
+            ct = int(last_u.get("cached_input_tokens", 0) or 0)
+            ot = int(last_u.get("output_tokens", 0) or 0)
+            all_time_in += max(0, it - ct)
+            all_time_cache += ct
+            all_time_out += ot
+            all_time_tok += (it + ot)
+    # GPT-5-Codex / o3 API pricing: $1.50/1M uncached input, $0.375/1M cached input, $6.00/1M output
+    all_time_cost = round((all_time_in * 1.50 + all_time_cache * 0.375 + all_time_out * 6.00) / 1e6, 2)
+
     record = {
         "schemaVersion": 1,
         "id": "codex",
         "name": "Codex",
         "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "ready": True,
-        "hasLocalStats": bool(stats.get("totalSessions", 0) > 0),
+        "ready": bool(codex_cmd) or len(codex_files) > 0,
+        "hasLocalStats": len(codex_files) > 0 or bool(stats.get("totalSessions", 0) > 0),
+        "allTimeTokens": all_time_tok,
+        "allTimeCostUsd": all_time_cost,
+        "allTimeSessions": len(codex_files),
+        "allTimePrompts": all_time_prompts,
     }
     record.update(stats)
     record.update(result)
+    record["allTimeTokens"] = all_time_tok
+    record["allTimeCostUsd"] = all_time_cost
+    record["allTimeSessions"] = len(codex_files)
+    record["allTimePrompts"] = all_time_prompts
     write_state_file("codex", record)
 
 
@@ -421,6 +485,8 @@ def collect_codex(force: bool = False):
 # =============================================================================
 
 def collect_grok():
+    if not is_provider_enabled("grok", default=False):
+        return
     today = dt.datetime.now().date()
     today_str = local_date_str(today)
     recent_dates = recent_date_strings()
@@ -428,6 +494,8 @@ def collect_grok():
 
     grok_session_dirs = [
         Path.home() / ".grok" / "sessions",
+        Path.home() / ".cache/omarchy/remote-sessions/grok",
+        Path.home() / "migration-staging/.grok/sessions",
     ]
 
     total_prompts = 0
@@ -531,6 +599,8 @@ def collect_grok():
 # =============================================================================
 
 def collect_copilot():
+    if not is_provider_enabled("copilot", default=False):
+        return
     today = dt.datetime.now().date()
     today_str = local_date_str(today)
     recent_dates = recent_date_strings()
@@ -654,7 +724,7 @@ def main():
 
     targets = [a.lower() for a in args.agents] if args.agents else ["agy", "claude", "codex", "grok", "copilot"]
 
-    want_agy = any(t in ("agy", "all") for t in targets)
+    want_agy = any(t in ("agy", "agy-personal", "all") for t in targets)
     want_agy_sb = True if "agy-sandbox" in targets else (None if want_agy else False)
     want_claude = any(t in ("claude", "all") for t in targets)
     want_fiserv = True if "fiserv-claude" in targets else (None if want_claude else False)
@@ -670,7 +740,7 @@ def main():
         )
 
     for target in targets:
-        if target in ("agy", "agy-sandbox", "claude", "fiserv-claude", "all"):
+        if target in ("agy", "agy-personal", "agy-sandbox", "claude", "fiserv-claude", "all"):
             continue
         elif target == "codex":
             collect_codex(force=args.force and ("codex" in args.agents))

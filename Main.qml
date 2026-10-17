@@ -9,6 +9,8 @@ Item {
   width: 0
   height: 0
 
+  property var shell: null
+  property var manifest: null
   property var settings: null
   property int selectedIndex: 0
   property bool showCombinedView: false
@@ -25,18 +27,33 @@ Item {
   readonly property string bundledUpdateBin: pluginDir + "/bin/update-all"
 
   readonly property var providerMeta: ({
+    "agy-personal": {
+      id: "agy-personal",
+      label: "AGY Personal",
+      shortLabel: "AGY · Personal",
+      displayName: "Antigravity (Personal / Homelab / Census)",
+      badge: "personal",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "personal",
+      icon: "agy",
+      command: "agy-personal",
+      description: "Antigravity CLI · Personal / Homelab / Census (james-mbp1, controller, gpu01)",
+      order: 9,
+      defaultEnabled: true
+    },
     "agy": {
       id: "agy",
-      label: "AGY",
-      shortLabel: "AGY",
-      displayName: "Antigravity (Primary)",
-      badge: "primary",
+      label: "AGY Corp",
+      shortLabel: "AGY · Corp",
+      displayName: "Antigravity (Clover Corp · clover-corp-ai)",
+      badge: "corp",
       family: "agy",
       familyLabel: "AGY",
       profile: "default",
       icon: "agy",
-      command: "agy",
-      description: "Antigravity CLI · Primary profile",
+      command: "agy-corp",
+      description: "Antigravity CLI · Clover Corp Vertex AI (james-mbp1, netctl1, netctl2)",
       order: 10,
       defaultEnabled: true
     },
@@ -50,7 +67,7 @@ Item {
       familyLabel: "AGY",
       profile: "sandbox",
       icon: "agy",
-      command: "agy",
+      command: "agy-sandbox",
       description: "Antigravity CLI · Secondary/Sandbox GCP project",
       order: 11,
       defaultEnabled: false
@@ -65,7 +82,7 @@ Item {
       familyLabel: "Claude",
       profile: "work",
       icon: "claude",
-      command: "claude",
+      command: "fiserv-claude",
       description: "Claude Code · Secondary/Work profile (~/.claude-work)",
       order: 20,
       defaultEnabled: false
@@ -223,6 +240,7 @@ Item {
   })
 
   readonly property var orderedProviderIds: [
+    "agy-personal",
     "agy",
     "agy-sandbox",
     "fiserv-claude",
@@ -245,7 +263,7 @@ Item {
 
   readonly property var effectiveSettings: {
     var merged = {
-      localhostOnly: true,
+      localhostOnly: false,
       aggregateByDefault: true,
       showAggregatedSummary: true,
       barDisplayMode: "aggregated",
@@ -339,7 +357,12 @@ Item {
   readonly property alias isRefreshing: root.refreshing
   property bool refreshQueued: false
   property bool refreshQueuedForce: false
+  property double lastRefreshEpochMs: 0
   property string saveScriptPayload: ""
+
+  signal requestOpen()
+  signal requestClose()
+  signal requestToggle()
 
   function isProviderEnabled(providerId) {
     var id = String(providerId || "").toLowerCase()
@@ -467,7 +490,10 @@ Item {
     onLoaded: {
       try {
         var parsed = JSON.parse(text())
-        if (parsed && typeof parsed === "object") root.summaryPayload = parsed
+        if (parsed && typeof parsed === "object") {
+          root.summaryPayload = parsed
+          root.lastRefreshEpochMs = Date.now()
+        }
       } catch (e) {}
     }
     onFileChanged: reload()
@@ -636,12 +662,45 @@ Item {
   readonly property var agyFamilyTotals: familyTotals("agy")
   readonly property var claudeFamilyTotals: familyTotals("claude")
 
+  readonly property var workVsPersonalTotals: {
+    var wToday = 0, w7d = 0, w30d = 0, wTok30d = 0
+    var pToday = 0, p7d = 0, p30d = 0, pTok30d = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      var p = enabledProviders[i]
+      if (!p) continue
+      var isPersonal = (p.id === "agy-personal" || p.id === "claude" || p.profile === "personal")
+      if (isPersonal) {
+        pToday += Number(p.todayCostUsd || 0)
+        p7d += Number(p.sevenDayCostUsd || 0)
+        p30d += Number(p.thirtyDayCostUsd || 0)
+        pTok30d += Number(p.thirtyDayTokens || 0)
+      } else {
+        wToday += Number(p.todayCostUsd || 0)
+        w7d += Number(p.sevenDayCostUsd || 0)
+        w30d += Number(p.thirtyDayCostUsd || 0)
+        wTok30d += Number(p.thirtyDayTokens || 0)
+      }
+    }
+    return {
+      workTodayCostUsd: Math.round(wToday * 100) / 100,
+      work7dCostUsd: Math.round(w7d * 100) / 100,
+      work30dCostUsd: Math.round(w30d * 100) / 100,
+      work30dTokens: Math.round(wTok30d),
+      personalTodayCostUsd: Math.round(pToday * 100) / 100,
+      personal7dCostUsd: Math.round(p7d * 100) / 100,
+      personal30dCostUsd: Math.round(p30d * 100) / 100,
+      personal30dTokens: Math.round(pTok30d)
+    }
+  }
+
   // Synthesizes a combined virtual provider across all enabled modules for "Combined" view mode
   readonly property var combinedProvider: {
     var dayMap = {}
     var dayOrder = []
     var combinedModels = []
     var combinedBreakdowns = []
+    var wsMap = {}
+    var hostMap = {}
     var latestUpdated = ""
 
     for (var i = 0; i < enabledProviders.length; i++) {
@@ -689,6 +748,49 @@ Item {
         })
       }
 
+      var wList = p.workspaceUsage || []
+      for (var w = 0; w < wList.length; w++) {
+        var wr = wList[w]
+        if (!wr || !wr.workspace) continue
+        var wk = p.shortLabel + ":" + String(wr.workspace)
+        if (!wsMap[wk]) {
+          wsMap[wk] = {
+            workspace: String(wr.workspace),
+            moduleLabel: p.shortLabel,
+            category: String(wr.category || p.badge || ""),
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+        wsMap[wk].sessions += Number(wr.sessions || 0)
+        wsMap[wk].prompts += Number(wr.prompts || 0)
+        wsMap[wk].tokens += Number(wr.tokens || 0)
+        wsMap[wk].costUsd = Math.round((wsMap[wk].costUsd + Number(wr.costUsd || 0)) * 100) / 100
+      }
+
+      var hList = p.hostsBreakdown || []
+      for (var h = 0; h < hList.length; h++) {
+        var hr = hList[h]
+        if (!hr || !hr.host) continue
+        var hk = String(hr.host)
+        if (!hostMap[hk]) {
+          hostMap[hk] = {
+            host: hk,
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+        hostMap[hk].sessions += Number(hr.sessions !== undefined ? hr.sessions : (hr.sessions30d || 0))
+        hostMap[hk].prompts += Number(hr.prompts !== undefined ? hr.prompts : (hr.prompts30d || 0))
+        hostMap[hk].tokens += Number(hr.tokens !== undefined ? hr.tokens : (hr.tokens30d || 0))
+        var hrCost = Number(hr.costUsd !== undefined ? hr.costUsd : (hr.costUsd30d || 0))
+        hostMap[hk].costUsd = Math.round((hostMap[hk].costUsd + hrCost) * 100) / 100
+      }
+
       combinedBreakdowns.push({
         project: p.shortLabel,
         badge: p.badge,
@@ -719,20 +821,50 @@ Item {
       return b.totalTokens - a.totalTokens
     })
 
+    var totalCombinedModelCost = 0
+    var totalCombinedModelTok = 0
+    for (var cmIdx = 0; cmIdx < combinedModels.length; cmIdx++) {
+      totalCombinedModelCost += Number(combinedModels[cmIdx].costUsd || 0)
+      totalCombinedModelTok += Number(combinedModels[cmIdx].totalTokens || 0)
+    }
+    for (var mIdx = 0; mIdx < combinedModels.length; mIdx++) {
+      combinedModels[mIdx].shareRatio = totalCombinedModelCost > 0
+        ? (Number(combinedModels[mIdx].costUsd || 0) / totalCombinedModelCost)
+        : (totalCombinedModelTok > 0 ? (Number(combinedModels[mIdx].totalTokens || 0) / totalCombinedModelTok) : 0.05)
+    }
+
+    var combinedWorkspaces = []
+    for (var wkKey in wsMap) {
+      combinedWorkspaces.push(wsMap[wkKey])
+    }
+    combinedWorkspaces.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.tokens - a.tokens
+    })
+
+    var combinedHosts = []
+    for (var hkKey in hostMap) {
+      combinedHosts.push(hostMap[hkKey])
+    }
+    combinedHosts.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.tokens - a.tokens
+    })
+
     return {
       id: "combined",
       name: "All Enabled Agents",
       shortLabel: "All Modules",
       badge: enabledProviders.length + " modules",
       family: "combined",
-      profile: "localhost",
+      profile: "multi-host",
       icon: "agy",
       enabled: true,
       ready: enabledProviders.length > 0,
       hasLocalStats: true,
       hasPromptStats: true,
       updatedAt: latestUpdated,
-      tierLabel: "Localhost Combined",
+      tierLabel: root.localhostOnly ? "Localhost Combined" : "Multi-Host Combined (5 Nodes)",
       usageStatusText: "",
       authHelpText: "",
       activeModel: enabledProviders.length + " active profiles",
@@ -750,6 +882,8 @@ Item {
       activeDays: mergedDays.length,
       recentDays: mergedDays,
       modelRows: combinedModels.slice(0, 8),
+      workspaceUsage: combinedWorkspaces.slice(0, 8),
+      hostsBreakdown: combinedHosts,
       projectsBreakdown: combinedBreakdowns,
       sharedOrgTokens30d: 0
     }
@@ -811,12 +945,16 @@ Item {
 
   function refreshAll(force) {
     var wantForce = !!force
+    if (!wantForce && root.lastRefreshEpochMs > 0 && (Date.now() - root.lastRefreshEpochMs) < 45000) {
+      return
+    }
     if (refreshProcess.running) {
       refreshQueued = true
       refreshQueuedForce = refreshQueuedForce || wantForce
       return
     }
     refreshing = true
+    root.lastRefreshEpochMs = Date.now()
     var cmd = [root.bundledUpdateBin]
     if (wantForce) cmd.push("--force")
     refreshProcess.command = cmd
@@ -858,9 +996,12 @@ Item {
 
   readonly property string barTooltipText: {
     if (root.enabledProviders.length === 0) return "AI Agents · No modules enabled"
-    var totalLine = "Localhost Total: Today " + root.formatUsd(root.aggregatedTotalTodayCost, false)
+    var scopePrefix = root.localhostOnly ? "Localhost Total" : "5-Node Total"
+    var totalLine = scopePrefix + ": Today " + root.formatUsd(root.aggregatedTotalTodayCost, false)
       + " · 7d " + root.formatUsd(root.aggregatedTotal7dCost, false)
       + " · 30d " + root.formatUsd(root.aggregatedTotal30dCost, false)
+      + "  [Work 30d: " + root.formatUsd(root.workVsPersonalTotals.work30dCostUsd, false)
+      + " · Personal 30d: " + root.formatUsd(root.workVsPersonalTotals.personal30dCostUsd, false) + "]"
     if (root.currentProvider) {
       return root.currentProvider.shortLabel + " (" + root.formatUsd(root.currentProvider.thirtyDayCostUsd, false) + " 30d)  |  " + totalLine
     }
@@ -909,6 +1050,7 @@ Item {
       agyFamily30dCostUsd: root.agyFamilyTotals.thirtyDayCostUsd,
       claudeFamilyTodayCostUsd: root.claudeFamilyTotals.todayCostUsd,
       claudeFamily30dCostUsd: root.claudeFamilyTotals.thirtyDayCostUsd,
+      workVsPersonal: root.workVsPersonalTotals,
       enabledCount: root.enabledProviders.length,
       enabledModules: mods
     })
@@ -1112,7 +1254,7 @@ Item {
         raw = parentRaw
         synthesizedFromParent = true
       }
-    } else if (key === "agy" && raw && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
+    } else if (key === "agy" && raw && !raw.profileId && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
       var sbCfg = (effectiveSettings.providers && effectiveSettings.providers["agy-sandbox"]) ? effectiveSettings.providers["agy-sandbox"] : {}
       var primaryEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "agy") || findProjectBreakdownEntry(raw.projectsBreakdown, meta.profile)
       var sbEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "agy-sandbox") || findProjectBreakdownEntry(raw.projectsBreakdown, sbCfg.gcpProject || sbCfg.profile || "sandbox")
@@ -1132,7 +1274,7 @@ Item {
         raw = parentRaw
         synthesizedFromParent = true
       }
-    } else if (key === "claude" && raw && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
+    } else if (key === "claude" && raw && !raw.profileId && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
       var workEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "fiserv-claude")
       var personalEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "claude") || findProjectBreakdownEntry(raw.projectsBreakdown, "personal")
       if (workEntry && personalEntry) {
@@ -1183,6 +1325,8 @@ Item {
         activeDays: 0,
         recentDays: [],
         modelRows: [],
+        workspaceUsage: [],
+        hostsBreakdown: [],
         projectsBreakdown: [],
         sharedOrgTokens30d: 0
       }
@@ -1251,7 +1395,8 @@ Item {
       recentDaysList = scaleRecentDays(recentDaysList, shareRatio, sevenDayCost, sevenDayTok)
       scopedBreakdown = [targetProjectBreakdown]
     } else if (scopedBreakdown.length > 0) {
-      var matchingEntry = findProjectBreakdownEntry(scopedBreakdown, meta.profile) || scopedBreakdown[0]
+      var matchingEntry = findProjectBreakdownEntry(scopedBreakdown, meta.profile)
+      if (!matchingEntry && !meta.profile) matchingEntry = scopedBreakdown[0]
       if (matchingEntry && matchingEntry.tokens30d !== undefined && matchingEntry.scope === "shared_gcp_project") {
         sharedOrgTok30d = Number(matchingEntry.tokens30d || 0)
       }
@@ -1320,6 +1465,8 @@ Item {
       activeDays: Number(raw.activeDays || recentDaysList.length),
       recentDays: recentDaysList,
       modelRows: modelRows,
+      workspaceUsage: raw.workspaceUsage instanceof Array ? raw.workspaceUsage : [],
+      hostsBreakdown: raw.hostsBreakdown instanceof Array ? raw.hostsBreakdown : [],
       projectsBreakdown: scopedBreakdown,
       sharedOrgTokens30d: sharedOrgTok30d
     }
@@ -1382,8 +1529,10 @@ Item {
     delegate: Item {
       required property string modelData
       visible: false
+      function reload() { fv.reload() }
 
       FileView {
+        id: fv
         path: root.usageDir + "/" + modelData + ".json"
         watchChanges: true
         printErrors: false
@@ -1394,6 +1543,7 @@ Item {
             var next = Object.assign({}, root.rawPayloads)
             next[modelData] = parsed
             root.rawPayloads = next
+            root.lastRefreshEpochMs = Date.now()
           } catch (err) {}
         }
 
@@ -1442,8 +1592,8 @@ Item {
 
     onExited: function(exitCode, exitStatus) {
       root.refreshing = false
+      root.lastRefreshEpochMs = Date.now()
       root.rescanFiles()
-      root.reloadFiles()
 
       if (root.refreshQueued) {
         var nextForce = root.refreshQueuedForce
@@ -1452,6 +1602,33 @@ Item {
         root.refreshAll(nextForce)
       }
     }
+  }
+
+  IpcHandler {
+    target: "nertwork.agents"
+
+    function open(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.summonBarWidget === "function" && root.shell.bar.summonBarWidget("nertwork.agents")) return
+      root.requestOpen()
+    }
+    function close(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.hideBarWidget === "function" && root.shell.bar.hideBarWidget("nertwork.agents")) return
+      root.requestClose()
+    }
+    function show(): void { open() }
+    function hide(): void { close() }
+    function toggle(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.isBarWidgetOpen === "function") {
+        if (root.shell.bar.isBarWidgetOpen("nertwork.agents")) {
+          if (root.shell.bar.hideBarWidget("nertwork.agents")) return
+        } else {
+          if (root.shell.bar.summonBarWidget("nertwork.agents")) return
+        }
+      }
+      root.requestToggle()
+    }
+    function refresh(): string { root.refreshAll(true); return "refreshing" }
+    function status(): string { return root.statusJson() }
   }
 
   Timer {

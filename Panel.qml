@@ -12,22 +12,96 @@ Ui.Panel {
   ipcTarget: "nertwork.agents"
   manageIpc: false
 
+  property var pluginService: null
+  property bool allowFallbackUsage: false
+
   readonly property var hostWidget: (parent && parent.parent && ("usageService" in parent.parent))
     ? parent.parent
     : null
+  readonly property var sharedService: root.pluginService
+    ? root.pluginService
+    : (root.bar && root.bar.shell
+        ? (typeof root.bar.shell.ensureService === "function"
+            ? root.bar.shell.ensureService("nertwork.agents")
+            : (typeof root.bar.shell.firstPartyServiceFor === "function"
+                ? root.bar.shell.firstPartyServiceFor("nertwork.agents")
+                : null))
+        : null)
   readonly property Item barIdentity: hostWidget ? hostWidget : root
   readonly property Item anchorTarget: (hostWidget && hostWidget.anchorButton)
     ? hostWidget.anchorButton
     : button
 
-  Main {
-    id: fallbackUsage
-    settings: root.settings
+  function syncServiceSettings() {
+    if (root.sharedService && root.settings) {
+      root.sharedService.settings = root.settings
+    }
   }
 
-  readonly property var usage: (hostWidget && hostWidget.usageService)
-    ? hostWidget.usageService
-    : fallbackUsage
+  onSharedServiceChanged: syncServiceSettings()
+  onSettingsChanged: syncServiceSettings()
+  Component.onCompleted: Qt.callLater(function() {
+    root.syncServiceSettings()
+    if (!root.sharedService && !(root.hostWidget && root.hostWidget.usageService)) {
+      root.allowFallbackUsage = true
+    }
+  })
+
+  QtObject {
+    id: emptyUsage
+    property var currentProvider: null
+    property var enabledProviders: []
+    property var providersByGroup: []
+    property var effectiveSettings: ({})
+    property int selectedIndex: 0
+    property bool showCombinedView: false
+    property bool showAggregatedSummary: true
+    property bool showBarCost: true
+    property string barDisplayMode: "total"
+    property string barCostWindow: "today"
+    property string barCostLabel: ""
+    property string barTooltipText: "AI Agents Usage & Quota"
+    property string terminalCommand: "xdg-terminal-exec"
+    property bool localhostOnly: false
+    property bool isRefreshing: false
+    property bool refreshing: false
+    property real aggregatedTotalTodayCost: 0
+    property real aggregatedTotal7dCost: 0
+    property real aggregatedTotal30dCost: 0
+    property real aggregatedTotal30dTokens: 0
+    property var workVsPersonalTotals: ({ personalCost30d: 0, personalTokens30d: 0, personalCount: 0, workCost30d: 0, workTokens30d: 0, workCount: 0 })
+    property var agyFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
+    property var claudeFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
+    signal requestOpen()
+    signal requestClose()
+    signal requestToggle()
+    function formatUsd(v, c) { return "$0.00" }
+    function formatCompactNumber(v) { return "0" }
+    function formatShortDay(v) { return "" }
+    function formatUpdatedAt(v) { return "never" }
+    function refreshAll(f) {}
+    function reloadFiles() {}
+    function cycleProvider(d) {}
+    function selectProvider(i) {}
+    function setSetting(k, v) {}
+    function setProviderEnabled(id, en) {}
+  }
+
+  Loader {
+    id: fallbackUsageLoader
+    active: root.allowFallbackUsage && !root.sharedService && !(root.hostWidget && root.hostWidget.usageService)
+    sourceComponent: Component {
+      Main {
+        settings: root.settings
+      }
+    }
+  }
+
+  readonly property var usage: root.sharedService
+    ? root.sharedService
+    : ((hostWidget && hostWidget.usageService)
+        ? hostWidget.usageService
+        : (fallbackUsageLoader.item ? fallbackUsageLoader.item : emptyUsage))
 
   property bool showSettings: false
   readonly property var activeProvider: usage.currentProvider
@@ -124,20 +198,16 @@ Ui.Panel {
     }
   }
 
-  IpcHandler {
+  Connections {
+    target: root.usage
     enabled: !root.hostWidget
-    target: "nertwork.agents"
-
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): void { root.toggle() }
-    function refresh(): string { root.usage.refreshAll(true); return "refreshing" }
-    function status(): string { return root.usage.statusJson() }
+    function onRequestOpen() { root.open() }
+    function onRequestClose() { root.close() }
+    function onRequestToggle() { root.toggle() }
   }
 
   readonly property var availableIcons: ({
+    "agy-personal": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "agy": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "agy-sandbox": { dark: "assets/agy.svg", light: "assets/agy-light.svg" },
     "claude": { dark: "assets/claude.svg", light: "assets/claude.svg" },
@@ -164,6 +234,10 @@ Ui.Panel {
     var pCfg = (usage && usage.effectiveSettings && usage.effectiveSettings.providers && usage.effectiveSettings.providers[p.id])
       ? usage.effectiveSettings.providers[p.id]
       : {}
+    var configuredCmd = String((pCfg && pCfg.command) ? pCfg.command : (p.command || "")).trim()
+    if (configuredCmd.length > 0) {
+      return configuredCmd
+    }
     if (p.id === "fiserv-claude") {
       var cfgDir = String(pCfg.configDir || p.configDir || "$HOME/.claude-work").replace(/^~/, "$HOME")
       return "CLAUDE_CONFIG_DIR=" + cfgDir + " claude"
@@ -323,6 +397,7 @@ Ui.Panel {
         spacing: Style.space(6)
 
         Rectangle {
+          id: kpiTokPill
           width: Math.min(parent.width, tokText.implicitWidth + Style.space(10))
           height: Style.space(18)
           radius: height / 2
@@ -342,6 +417,7 @@ Ui.Panel {
 
         Text {
           visible: kpiRoot.subtext !== ""
+          width: Math.max(0, parent.width - (kpiTokPill.visible ? kpiTokPill.width + parent.spacing : 0))
           anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
           text: kpiRoot.subtext
@@ -399,10 +475,16 @@ Ui.Panel {
       }
     }
 
+    readonly property real headerChromeHeight: (aggregateBanner.visible ? aggregateBanner.implicitHeight + Style.space(10) : 0)
+      + (tabsFlick.visible ? tabsFlick.height + Style.space(10) : 0)
+      + moduleHeaderCard.implicitHeight + Style.space(10)
+    readonly property real maxScrollAreaHeight: Math.max(Style.space(260), Style.space(760) - Style.space(28) - headerChromeHeight)
+
     Column {
       id: mainRootColumn
       width: parent.width
       spacing: Style.space(10)
+      clip: true
 
       // =======================================================================
       // 1. TOP AGGREGATE / OVERVIEW BANNER
@@ -437,7 +519,7 @@ Ui.Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: "LOCALHOST AI SPEND"
+                  text: usage.localhostOnly ? "LOCALHOST AI SPEND" : "MULTI-HOST AI SPEND · 5 NODES"
                   color: root.accentColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -504,27 +586,112 @@ Ui.Panel {
             }
           }
 
+          // Work vs Personal Spend Split Strip
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Rectangle {
+              width: (parent.width - Style.space(6)) * 0.5
+              height: Style.space(22)
+              radius: Style.space(6)
+              clip: true
+              color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
+              border.width: 1
+              border.color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+
+              Row {
+                width: Math.min(implicitWidth, parent.width - Style.space(12))
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+
+                Text {
+                  id: personalSplitLabel
+                  textFormat: Text.PlainText
+                  text: "Personal:"
+                  color: root.mutedColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - personalSplitLabel.implicitWidth - parent.spacing))
+                  textFormat: Text.PlainText
+                  text: "Today " + usage.formatUsd(usage.workVsPersonalTotals.personalTodayCostUsd, false)
+                    + " · 30d " + usage.formatUsd(usage.workVsPersonalTotals.personal30dCostUsd, false)
+                  color: root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                  elide: Text.ElideRight
+                }
+              }
+            }
+
+            Rectangle {
+              width: (parent.width - Style.space(6)) * 0.5
+              height: Style.space(22)
+              radius: Style.space(6)
+              clip: true
+              color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+              border.width: 1
+              border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
+
+              Row {
+                width: Math.min(implicitWidth, parent.width - Style.space(12))
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+
+                Text {
+                  id: workSplitLabel
+                  textFormat: Text.PlainText
+                  text: "Work:"
+                  color: root.mutedColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - workSplitLabel.implicitWidth - parent.spacing))
+                  textFormat: Text.PlainText
+                  text: "Today " + usage.formatUsd(usage.workVsPersonalTotals.workTodayCostUsd, false)
+                    + " · 30d " + usage.formatUsd(usage.workVsPersonalTotals.work30dCostUsd, false)
+                  color: root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                  elide: Text.ElideRight
+                }
+              }
+            }
+          }
+
           // Family Subtotals Strip (AGY Total | Claude Total)
           Row {
             visible: usage.agyFamilyTotals.count > 0 || usage.claudeFamilyTotals.count > 0
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
             Rectangle {
               visible: usage.agyFamilyTotals.count > 0
-              width: agyFamRow.implicitWidth + Style.space(14)
+              width: (usage.agyFamilyTotals.count > 0 && usage.claudeFamilyTotals.count > 0)
+                ? (parent.width - Style.space(6)) * 0.5
+                : parent.width
               height: Style.space(22)
               radius: Style.space(6)
+              clip: true
               color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.05)
               border.width: 1
               border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
 
               Row {
                 id: agyFamRow
+                width: Math.min(implicitWidth, parent.width - Style.space(12))
                 anchors.centerIn: parent
                 spacing: Style.space(5)
 
                 Text {
+                  id: agyFamLabel
                   textFormat: Text.PlainText
                   text: "AGY Total (" + usage.agyFamilyTotals.count + "):"
                   color: root.mutedColor
@@ -533,6 +700,7 @@ Ui.Panel {
                 }
 
                 Text {
+                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - agyFamLabel.implicitWidth - parent.spacing))
                   textFormat: Text.PlainText
                   text: usage.formatUsd(usage.agyFamilyTotals.thirtyDayCostUsd, false)
                     + " · " + usage.formatCompactNumber(usage.agyFamilyTotals.thirtyDayTokens)
@@ -540,25 +708,31 @@ Ui.Panel {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   font.weight: Font.DemiBold
+                  elide: Text.ElideRight
                 }
               }
             }
 
             Rectangle {
               visible: usage.claudeFamilyTotals.count > 0
-              width: claudeFamRow.implicitWidth + Style.space(14)
+              width: (usage.agyFamilyTotals.count > 0 && usage.claudeFamilyTotals.count > 0)
+                ? (parent.width - Style.space(6)) * 0.5
+                : parent.width
               height: Style.space(22)
               radius: Style.space(6)
+              clip: true
               color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.05)
               border.width: 1
               border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
 
               Row {
                 id: claudeFamRow
+                width: Math.min(implicitWidth, parent.width - Style.space(12))
                 anchors.centerIn: parent
                 spacing: Style.space(5)
 
                 Text {
+                  id: claudeFamLabel
                   textFormat: Text.PlainText
                   text: "Claude Total (" + usage.claudeFamilyTotals.count + "):"
                   color: root.mutedColor
@@ -567,6 +741,7 @@ Ui.Panel {
                 }
 
                 Text {
+                  width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - claudeFamLabel.implicitWidth - parent.spacing))
                   textFormat: Text.PlainText
                   text: usage.formatUsd(usage.claudeFamilyTotals.thirtyDayCostUsd, false)
                     + " · " + usage.formatCompactNumber(usage.claudeFamilyTotals.thirtyDayTokens)
@@ -574,6 +749,7 @@ Ui.Panel {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   font.weight: Font.DemiBold
+                  elide: Text.ElideRight
                 }
               }
             }
@@ -708,17 +884,28 @@ Ui.Panel {
           }
 
           Column {
+            id: headerTitleCol
             anchors.verticalCenter: parent.verticalCenter
             width: parent.width
-              - (root.showSettings ? 0 : Style.space(34))
+              - ((!root.showSettings && root.activeProvider !== null) ? Style.space(34) : 0)
               - headerActionsRow.implicitWidth
               - Style.space(20)
             spacing: Style.space(2)
 
             Row {
+              width: parent.width
               spacing: Style.space(6)
 
               Text {
+                width: Math.min(
+                  implicitWidth,
+                  Math.max(
+                    Style.space(100),
+                    parent.width
+                      - (modBadgePill.visible ? modBadgePill.width + parent.spacing : 0)
+                      - (hostCountPill.visible ? hostCountPill.width + parent.spacing : 0)
+                  )
+                )
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
                 text: root.showSettings
@@ -728,9 +915,11 @@ Ui.Panel {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.subtitle
                 font.weight: Font.Bold
+                elide: Text.ElideRight
               }
 
               BadgePill {
+                id: modBadgePill
                 visible: !root.showSettings && root.activeProvider !== null
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.activeProvider ? root.activeProvider.badge : ""
@@ -740,9 +929,10 @@ Ui.Panel {
               }
 
               BadgePill {
-                visible: !root.showSettings && usage.localhostOnly
+                id: hostCountPill
+                visible: !root.showSettings
                 anchors.verticalCenter: parent.verticalCenter
-                text: "localhost"
+                text: usage.localhostOnly ? "localhost" : "5 nodes"
                 textColor: root.mutedColor
               }
             }
@@ -806,7 +996,7 @@ Ui.Panel {
         id: settingsFlick
         visible: root.showSettings
         width: parent.width
-        height: Math.min(Style.space(540), settingsViewItem.implicitHeight)
+        height: Math.min(panel.maxScrollAreaHeight, settingsViewItem.implicitHeight)
         contentWidth: width
         contentHeight: settingsViewItem.implicitHeight
         clip: true
@@ -890,9 +1080,17 @@ Ui.Panel {
               spacing: Style.space(2)
 
               Row {
+                width: parent.width
                 spacing: Style.space(6)
 
                 Text {
+                  width: Math.min(
+                    implicitWidth,
+                    Math.max(
+                      Style.space(80),
+                      parent.width - (sRowBadgePill.visible ? sRowBadgePill.width + parent.spacing : 0)
+                    )
+                  )
                   textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: sRowRoot.label
@@ -900,9 +1098,11 @@ Ui.Panel {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.bodySmall
                   font.weight: Font.Medium
+                  elide: Text.ElideRight
                 }
 
                 BadgePill {
+                  id: sRowBadgePill
                   visible: sRowRoot.badgeText !== ""
                   anchors.verticalCenter: parent.verticalCenter
                   text: sRowRoot.badgeText
@@ -949,12 +1149,12 @@ Ui.Panel {
 
           SettingsSectionCard {
             title: "EXECUTION & AGGREGATION"
-            subtitle: "Single-instance localhost defaults with optional multi-module rollups."
+            subtitle: "Multi-host or localhost collection with optional multi-module rollups."
 
             SettingsToggleRow {
               label: "Localhost-only collection"
-              badgeText: "localhost"
-              description: "Collect usage exclusively from local transcripts on this host (no SSH fan-out)"
+              badgeText: root.usage.localhostOnly ? "localhost" : "5 nodes"
+              description: "When enabled, restrict collection to this host only (disables multi-host SSH fan-out)"
               checked: root.usage.localhostOnly
               onToggled: function(val) { root.usage.setSetting("localhostOnly", val) }
             }
@@ -962,7 +1162,7 @@ Ui.Panel {
             SettingsToggleRow {
               label: "Show aggregated totals banner"
               badgeText: "Overview"
-              description: "Display combined AGY + Claude localhost spend and token rollup at top of panel"
+              description: "Display combined AGY + Claude spend and token rollup across enabled modules at top of panel"
               checked: root.usage.showAggregatedSummary
               onToggled: function(val) { root.usage.setSetting("showAggregatedSummary", val) }
             }
@@ -978,7 +1178,7 @@ Ui.Panel {
             SettingsToggleRow {
               label: "Bar widget displays aggregated total"
               badgeText: "30d Rollup"
-              description: "When enabled, bar cost shows combined localhost spend; otherwise shows active tab"
+              description: "When enabled, bar cost shows combined spend across enabled modules; otherwise shows active tab"
               checked: root.usage.barDisplayMode !== "active"
               onToggled: function(val) { root.usage.setSetting("barDisplayMode", val ? "aggregated" : "active") }
             }
@@ -1044,7 +1244,7 @@ Ui.Panel {
         id: dashboardFlick
         visible: !root.showSettings && root.activeProvider !== null
         width: parent.width
-        height: Math.min(Style.space(550), dashboardColumn.implicitHeight)
+        height: Math.min(panel.maxScrollAreaHeight, dashboardColumn.implicitHeight)
         contentWidth: width
         contentHeight: dashboardColumn.implicitHeight
         clip: true
@@ -1321,7 +1521,8 @@ Ui.Panel {
 
               // Table Header
               Row {
-                width: parent.width
+                x: Style.space(6)
+                width: parent.width - Style.space(8)
                 height: Style.space(18)
 
                 Text {
@@ -1460,6 +1661,216 @@ Ui.Panel {
           }
 
           // -------------------------------------------------------------------
+          // TOP WORKSPACES & NODES BREAKDOWN (30D)
+          // -------------------------------------------------------------------
+          Rectangle {
+            visible: root.activeProvider !== null
+              && (((root.activeProvider.workspaceUsage instanceof Array) && root.activeProvider.workspaceUsage.length > 0)
+                  || ((root.activeProvider.hostsBreakdown instanceof Array) && root.activeProvider.hostsBreakdown.length > 0))
+            width: parent.width
+            implicitHeight: wsCol.implicitHeight + Style.space(20)
+            radius: Style.cornerRadius
+            color: root.cardFill
+            border.width: 1
+            border.color: root.cardBorder
+
+            Column {
+              id: wsCol
+              anchors.fill: parent
+              anchors.margins: Style.space(10)
+              spacing: Style.space(6)
+
+              Row {
+                visible: (root.activeProvider && root.activeProvider.workspaceUsage instanceof Array && root.activeProvider.workspaceUsage.length > 0)
+                x: Style.space(6)
+                width: parent.width - Style.space(8)
+
+                Text {
+                  width: parent.width * 0.50
+                  textFormat: Text.PlainText
+                  text: "TOP WORKSPACES (30D)"
+                  color: root.subtleColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                  font.letterSpacing: 0.6
+                }
+
+                Text {
+                  width: parent.width * 0.16
+                  horizontalAlignment: Text.AlignRight
+                  textFormat: Text.PlainText
+                  text: "SESS / PR"
+                  color: root.subtleColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                }
+
+                Text {
+                  width: parent.width * 0.16
+                  horizontalAlignment: Text.AlignRight
+                  textFormat: Text.PlainText
+                  text: "TOKENS"
+                  color: root.subtleColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                }
+
+                Text {
+                  width: parent.width * 0.18
+                  horizontalAlignment: Text.AlignRight
+                  textFormat: Text.PlainText
+                  text: "30D COST"
+                  color: root.subtleColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.Bold
+                }
+              }
+
+              Repeater {
+                model: (root.activeProvider && root.activeProvider.workspaceUsage instanceof Array)
+                  ? root.activeProvider.workspaceUsage.slice(0, 6)
+                  : []
+
+                delegate: Item {
+                  id: wsRowItem
+                  required property var modelData
+                  required property int index
+                  width: wsCol.width
+                  height: Style.space(22)
+
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: Style.space(4)
+                    color: wsRowItem.index % 2 === 0
+                      ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.03)
+                      : "transparent"
+                  }
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(6)
+                    anchors.rightMargin: Style.space(2)
+
+                    Text {
+                      width: parent.width * 0.50
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: wsRowItem.modelData.moduleLabel
+                        ? (wsRowItem.modelData.workspace + " (" + wsRowItem.modelData.moduleLabel + ")")
+                        : String(wsRowItem.modelData.workspace || "")
+                      color: root.fgColor
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                      font.weight: Font.Medium
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      width: parent.width * 0.16
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText
+                      text: String(wsRowItem.modelData.sessions || 0) + " / " + String(wsRowItem.modelData.prompts || 0)
+                      color: root.mutedColor
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      width: parent.width * 0.16
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText
+                      text: usage.formatCompactNumber(wsRowItem.modelData.tokens || 0)
+                      color: root.mutedColor
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      width: parent.width * 0.18
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText
+                      text: usage.formatUsd(wsRowItem.modelData.costUsd || 0, false)
+                      color: root.fgColor
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                      font.weight: Font.Bold
+                    }
+                  }
+                }
+              }
+
+              Text {
+                visible: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array && root.activeProvider.hostsBreakdown.length > 0)
+                x: Style.space(6)
+                width: parent.width - Style.space(8)
+                topPadding: (root.activeProvider && root.activeProvider.workspaceUsage instanceof Array && root.activeProvider.workspaceUsage.length > 0) ? Style.space(4) : 0
+                textFormat: Text.PlainText
+                text: "HOSTS / NODES (30D)"
+                color: root.subtleColor
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.weight: Font.Bold
+                font.letterSpacing: 0.6
+              }
+
+              // Hosts Breakdown Chips Row
+              Flow {
+                visible: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array && root.activeProvider.hostsBreakdown.length > 0)
+                width: parent.width
+                spacing: Style.space(6)
+                topPadding: Style.space(2)
+
+                Repeater {
+                  model: (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array)
+                    ? root.activeProvider.hostsBreakdown
+                    : []
+
+                  delegate: Rectangle {
+                    required property var modelData
+                    width: hostChipRow.implicitWidth + Style.space(12)
+                    height: Style.space(20)
+                    radius: Style.space(5)
+                    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                    border.width: 1
+                    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
+
+                    Row {
+                      id: hostChipRow
+                      anchors.centerIn: parent
+                      spacing: Style.space(4)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: String(modelData.host || "") + ":"
+                        color: root.mutedColor
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: usage.formatUsd(modelData.costUsd !== undefined ? modelData.costUsd : (modelData.costUsd30d || 0), false)
+                          + " (" + String(modelData.sessions !== undefined ? modelData.sessions : (modelData.sessions30d || 0)) + "s)"
+                        color: root.fgColor
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        font.weight: Font.DemiBold
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // -------------------------------------------------------------------
           // RATE LIMITS (when present, e.g. Codex / Claude / AGY)
           // -------------------------------------------------------------------
           Rectangle {
@@ -1558,14 +1969,15 @@ Ui.Panel {
             border.width: 1
             border.color: root.cardBorder
 
-            Row {
+            Flow {
               id: telemetryRow
-              anchors.fill: parent
+              width: parent.width - Style.space(16)
+              anchors.left: parent.left
+              anchors.top: parent.top
               anchors.margins: Style.space(8)
               spacing: Style.space(8)
 
               BadgePill {
-                anchors.verticalCenter: parent.verticalCenter
                 text: "Local 30d: " + (root.activeProvider ? root.activeProvider.totalSessions : 0) + " sessions · "
                   + (root.activeProvider ? usage.formatCompactNumber(root.activeProvider.totalPrompts) : "0") + " prompts"
                 textColor: root.fgColor
@@ -1573,7 +1985,6 @@ Ui.Panel {
 
               BadgePill {
                 visible: root.activeProvider !== null && root.activeProvider.sharedOrgTokens30d > 0
-                anchors.verticalCenter: parent.verticalCenter
                 text: "Shared GCP Project Quota (30d): " + (root.activeProvider ? usage.formatCompactNumber(root.activeProvider.sharedOrgTokens30d) : "0") + " tok"
                 textColor: root.mutedColor
               }

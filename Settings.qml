@@ -91,9 +91,17 @@ Item {
       spacing: Style.space(2)
 
       Row {
+        width: parent.width
         spacing: Style.space(6)
 
         Text {
+          width: Math.min(
+            implicitWidth,
+            Math.max(
+              Style.space(80),
+              parent.width - (badgeRect.visible ? badgeRect.width + parent.spacing : 0)
+            )
+          )
           textFormat: Text.PlainText
           anchors.verticalCenter: parent.verticalCenter
           text: rowRoot.label
@@ -101,9 +109,11 @@ Item {
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           font.weight: Font.Medium
+          elide: Text.ElideRight
         }
 
         Rectangle {
+          id: badgeRect
           visible: rowRoot.badgeText !== ""
           anchors.verticalCenter: parent.verticalCenter
           width: badgeLabel.implicitWidth + Style.space(10)
@@ -168,13 +178,13 @@ Item {
 
     SectionCard {
       title: "EXECUTION & AGGREGATION"
-      subtitle: "Single-instance localhost defaults with optional multi-module rollups."
+      subtitle: "Multi-host or localhost collection with optional multi-module rollups."
 
       ToggleRow {
         label: "Localhost-only collection"
-        badgeText: "localhost"
-        description: "Collect usage exclusively from local transcripts on this host (no SSH fan-out)"
-        checked: root.usage ? root.usage.localhostOnly : true
+        badgeText: (root.usage && root.usage.localhostOnly) ? "localhost" : "5 nodes"
+        description: "When enabled, restrict collection to this host only (disables multi-host SSH fan-out)"
+        checked: root.usage ? root.usage.localhostOnly : false
         onToggled: function(val) {
           if (root.usage) root.usage.setSetting("localhostOnly", val)
         }
@@ -183,7 +193,7 @@ Item {
       ToggleRow {
         label: "Show aggregated totals banner"
         badgeText: "Overview"
-        description: "Display combined AGY + Claude localhost spend and token rollup at top of panel"
+        description: "Display combined AGY + Claude spend and token rollup across enabled modules at top of panel"
         checked: root.usage ? root.usage.showAggregatedSummary : true
         onToggled: function(val) {
           if (root.usage) root.usage.setSetting("showAggregatedSummary", val)
@@ -203,7 +213,7 @@ Item {
       ToggleRow {
         label: "Bar widget displays aggregated total"
         badgeText: "30d Rollup"
-        description: "When enabled, bar cost shows combined localhost spend; otherwise shows active tab"
+        description: "When enabled, bar cost shows combined spend across enabled modules; otherwise shows active tab"
         checked: root.usage ? (root.usage.barDisplayMode !== "active") : true
         onToggled: function(val) {
           if (root.usage) root.usage.setSetting("barDisplayMode", val ? "aggregated" : "active")

@@ -8,12 +8,88 @@ Ui.BarWidget {
   id: root
   moduleName: "nertwork.agents"
 
-  Main {
-    id: usage
-    settings: root.settings
+  property var pluginService: null
+  property bool allowFallbackUsage: false
+
+  readonly property var sharedService: root.pluginService
+    ? root.pluginService
+    : (root.bar && root.bar.shell
+        ? (typeof root.bar.shell.ensureService === "function"
+            ? root.bar.shell.ensureService("nertwork.agents")
+            : (typeof root.bar.shell.firstPartyServiceFor === "function"
+                ? root.bar.shell.firstPartyServiceFor("nertwork.agents")
+                : null))
+        : null)
+
+  function syncServiceSettings() {
+    if (root.sharedService && root.settings) {
+      root.sharedService.settings = root.settings
+    }
   }
 
-  readonly property alias usageService: usage
+  onSharedServiceChanged: syncServiceSettings()
+  onSettingsChanged: syncServiceSettings()
+  Component.onCompleted: Qt.callLater(function() {
+    root.syncServiceSettings()
+    if (!root.sharedService) {
+      root.allowFallbackUsage = true
+    }
+  })
+
+  QtObject {
+    id: emptyUsage
+    property var currentProvider: null
+    property var enabledProviders: []
+    property var providersByGroup: []
+    property var effectiveSettings: ({})
+    property int selectedIndex: 0
+    property bool showCombinedView: false
+    property bool showAggregatedSummary: true
+    property bool showBarCost: true
+    property string barDisplayMode: "total"
+    property string barCostWindow: "today"
+    property string barCostLabel: ""
+    property string barTooltipText: "AI Agents Usage & Quota"
+    property string terminalCommand: "xdg-terminal-exec"
+    property bool localhostOnly: false
+    property bool isRefreshing: false
+    property bool refreshing: false
+    property real aggregatedTotalTodayCost: 0
+    property real aggregatedTotal7dCost: 0
+    property real aggregatedTotal30dCost: 0
+    property real aggregatedTotal30dTokens: 0
+    property var workVsPersonalTotals: ({ personalCost30d: 0, personalTokens30d: 0, personalCount: 0, workCost30d: 0, workTokens30d: 0, workCount: 0 })
+    property var agyFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
+    property var claudeFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
+    signal requestOpen()
+    signal requestClose()
+    signal requestToggle()
+    function formatUsd(v, c) { return "$0.00" }
+    function formatCompactNumber(v) { return "0" }
+    function formatShortDay(v) { return "" }
+    function formatUpdatedAt(v) { return "never" }
+    function refreshAll(f) {}
+    function reloadFiles() {}
+    function cycleProvider(d) {}
+    function selectProvider(i) {}
+    function setSetting(k, v) {}
+    function setProviderEnabled(id, en) {}
+  }
+
+  Loader {
+    id: fallbackUsageLoader
+    active: root.allowFallbackUsage && !root.sharedService
+    sourceComponent: Component {
+      Main {
+        settings: root.settings
+      }
+    }
+  }
+
+  readonly property var usage: root.sharedService
+    ? root.sharedService
+    : (fallbackUsageLoader.item ? fallbackUsageLoader.item : emptyUsage)
+  readonly property var usageService: root.usage
   readonly property alias anchorButton: button
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool panelOpened: opened
@@ -38,23 +114,22 @@ Ui.BarWidget {
     return usage.formatUsd(displayCostValue, true)
   }
 
-  readonly property string barTooltip: {
-    if (!hasVisibleAgents) return "AI Agents · No modules enabled"
-    var totalLine = "Localhost Total: Today " + usage.formatUsd(usage.aggregatedTotalTodayCost, false)
-      + " · 7d " + usage.formatUsd(usage.aggregatedTotal7dCost, false)
-      + " · 30d " + usage.formatUsd(usage.aggregatedTotal30dCost, false)
-    if (activeProvider) {
-      return activeProvider.shortLabel + " (" + usage.formatUsd(activeProvider.thirtyDayCostUsd, false) + " 30d)  |  " + totalLine
-    }
-    return totalLine
-  }
+  readonly property string barTooltip: usage.barTooltipText
 
   implicitWidth: hasVisibleAgents ? button.implicitWidth : 0
   implicitHeight: hasVisibleAgents ? button.implicitHeight : 0
   visible: hasVisibleAgents
 
+  function ensurePanelLoaded() {
+    if (!panelLoader.active) {
+      panelLoader.active = true
+    }
+    return panelLoader.item
+  }
+
   function open() {
-    if (panelLoader.item) panelLoader.item.open()
+    var item = ensurePanelLoaded()
+    if (item) item.open()
   }
 
   function close() {
@@ -70,62 +145,23 @@ Ui.BarWidget {
   }
 
   function toggle() {
-    if (panelLoader.item) panelLoader.item.toggle()
+    var item = ensurePanelLoaded()
+    if (item) item.toggle()
   }
 
   function openSettings() {
-    if (panelLoader.item) {
-      panelLoader.item.showSettings = true
-      panelLoader.item.open()
+    var item = ensurePanelLoaded()
+    if (item) {
+      item.showSettings = true
+      item.open()
     }
   }
 
-  IpcHandler {
-    target: "nertwork.agents"
-
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): string {
-      root.toggle()
-      return root.opened ? "opened" : "closed"
-    }
-
-    function refresh(): string {
-      usage.refreshAll(true)
-      return "refreshing"
-    }
-
-    function status(): string {
-      var mods = []
-      for (var i = 0; i < usage.enabledProviders.length; i++) {
-        var p = usage.enabledProviders[i]
-        mods.push({
-          id: p.id,
-          shortLabel: p.shortLabel,
-          profile: p.profile,
-          todayCostUsd: p.todayCostUsd,
-          sevenDayCostUsd: p.sevenDayCostUsd,
-          thirtyDayCostUsd: p.thirtyDayCostUsd,
-          thirtyDayTokens: p.thirtyDayTokens
-        })
-      }
-      return JSON.stringify({
-        opened: root.opened,
-        localhostOnly: usage.localhostOnly,
-        showAggregatedSummary: usage.showAggregatedSummary,
-        barDisplayMode: usage.barDisplayMode,
-        barCostLabel: root.barCostLabel,
-        aggregatedTodayCostUsd: usage.aggregatedTotalTodayCost,
-        aggregated7dCostUsd: usage.aggregatedTotal7dCost,
-        aggregated30dCostUsd: usage.aggregatedTotal30dCost,
-        agyFamily30dCostUsd: usage.agyFamilyTotals.thirtyDayCostUsd,
-        claudeFamily30dCostUsd: usage.claudeFamilyTotals.thirtyDayCostUsd,
-        enabledCount: usage.enabledProviders.length,
-        enabledModules: mods
-      })
-    }
+  Connections {
+    target: root.usage
+    function onRequestOpen() { root.open() }
+    function onRequestClose() { root.close() }
+    function onRequestToggle() { root.toggle() }
   }
 
   Ui.WidgetButton {
@@ -181,7 +217,7 @@ Ui.BarWidget {
 
   Loader {
     id: panelLoader
-    active: true
+    active: false
     source: Qt.resolvedUrl("Panel.qml")
     visible: false
   }
