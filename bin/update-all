@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONDONTWRITEBYTECODE=1
 
 if [[ -x "$SCRIPT_DIR/sync-remote-hosts" ]]; then
   if [[ " $* " == *" --force "* ]]; then
@@ -10,10 +11,10 @@ if [[ -x "$SCRIPT_DIR/sync-remote-hosts" ]]; then
   else
     (
       if "$SCRIPT_DIR/sync-remote-hosts" >/dev/null 2>&1; then
-        python3 "$SCRIPT_DIR/collector.py" >/dev/null 2>&1 || true
+        python3 -B "$SCRIPT_DIR/collector.py" >/dev/null 2>&1 || true
       fi
     ) &
   fi
 fi
 
-exec python3 "$SCRIPT_DIR/collector.py" "$@"
+exec python3 -B "$SCRIPT_DIR/collector.py" "$@"

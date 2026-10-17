@@ -34,6 +34,8 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
+
 
 def get_usage_dir() -> Path:
     state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
