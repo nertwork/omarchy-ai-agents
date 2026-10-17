@@ -16,7 +16,23 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+
+PROFILE_ALLOWED_HOSTS: dict[str, tuple[str, ...]] = {
+    "agy": ("james-mbp1", "netctl1", "netctl2"),
+    "agy-personal": ("james-mbp1", "controller", "gpu01"),
+    "agy-census": ("james-mbp1",),
+    "agy-sandbox": ("james-mbp1", "controller", "gpu01", "netctl1", "netctl2"),
+}
+
+HOST_ALLOWED_PROFILES: dict[str, tuple[str, ...]] = {
+    "james-mbp1": ("agy-personal", "agy-census", "agy", "agy-sandbox"),
+    "netctl1": ("agy", "agy-sandbox"),
+    "netctl2": ("agy", "agy-sandbox"),
+    "controller": ("agy-personal", "agy-sandbox"),
+    "gpu01": ("agy-personal", "agy-sandbox"),
+}
 import subprocess
 import sys
 import time
@@ -777,13 +793,14 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
         try:
             raw_sc = json.loads(sc_p.read_text(encoding="utf-8"))
             schema_v = int(raw_sc.get("__schema__", 0) or 0)
-            if schema_v in (5, 6, 7):
+            if schema_v in (5, 6, 7, 8):
                 sc = raw_sc.get("sessions", {})
                 if schema_v < 6:
                     for _entry in sc.values():
                         _d = _entry.get("data")
                         if isinstance(_d, dict) and "events" in _d:
                             _d["events"] = _compact_session_events(_d["events"], now_ts)
+                if schema_v < 8:
                     migrated_schema = True
         except Exception:
             sc = {}
@@ -873,9 +890,10 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                         entry["tr_sz"] = st.st_size
                         entry["tr_mt"] = int(st.st_mtime)
 
+    local_host = socket.gethostname().split(".")[0] or "james-mbp1"
     for d, dir_proj, is_dedicated in dirs:
         is_pers = "personal" in d.name.lower()
-        _register_dir(d, dir_proj, is_dedicated, "james-mbp1", is_personal_dir=is_pers)
+        _register_dir(d, dir_proj, is_dedicated, local_host, is_personal_dir=is_pers)
 
     remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
     if remote_hosts_root.exists():
@@ -922,6 +940,7 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
             new_sc[cid] = sc[cid]
         else:
             parsed = _parse_session(cid, info["db"], info["tr"], info["proj"], info["dedicated"], sandbox_proj=sb_p)
+            parsed["raw_hosts"] = hosts_sorted
             parsed["hosts"] = hosts_sorted
             parsed["personal_dir"] = bool(info["personal_dir"])
             new_sc[cid] = {
@@ -970,12 +989,29 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                 dirty = True
 
         # Classify session into profile_id: agy-census, agy (Corp/Work), agy-sandbox, or agy-personal
+        # Enforce strict per-host profile rules:
+        # - netctl1, netctl2: ONLY agy (Corp) and agy-sandbox (never agy-personal or agy-census)
+        # - controller, gpu01: ONLY agy-personal and agy-sandbox (never agy or agy-census)
+        # - james-mbp1: all 4 profiles (agy-personal, agy-census, agy, agy-sandbox)
+        raw_hosts_list = d.get("raw_hosts") or d.get("hosts") or ["james-mbp1"]
+        if "raw_hosts" not in d:
+            d["raw_hosts"] = list(raw_hosts_list)
+            dirty = True
         c_proj = d.get("proj") or pri_p
         c_ws = d.get("ws") or "global"
-        c_hosts = set(d.get("hosts") or [])
-        is_census = _is_census_workspace(c_ws)
-        is_clover = (not is_census) and (_is_clover_workspace(c_ws) or (bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"})))
-        if is_census:
+        c_hosts = set(raw_hosts_list)
+        only_netctl = bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"})
+        only_homelab = bool(c_hosts) and c_hosts.issubset({"controller", "gpu01"})
+        has_mbp1 = ("james-mbp1" in c_hosts) or (not c_hosts)
+
+        is_census = has_mbp1 and (not only_netctl) and (not only_homelab) and _is_census_workspace(c_ws)
+        is_clover = (not is_census) and (not only_homelab) and (_is_clover_workspace(c_ws) or only_netctl)
+
+        if only_netctl:
+            prof_id = "agy-sandbox" if c_proj == sb_p else "agy"
+        elif only_homelab:
+            prof_id = "agy-sandbox" if (c_proj == sb_p and d.get("dedicated")) else "agy-personal"
+        elif is_census:
             prof_id = "agy-census"
         elif is_clover:
             prof_id = "agy-sandbox" if c_proj == sb_p else "agy"
@@ -987,13 +1023,19 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                 d["proj"] = pri_p
                 dirty = True
 
+        allowed_for_prof = set(PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",)))
+        filtered_hosts = sorted(c_hosts & allowed_for_prof) or [PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",))[0]]
+        if d.get("hosts") != filtered_hosts:
+            d["hosts"] = filtered_hosts
+            dirty = True
+
         if d.get("profile_id") != prof_id:
             d["profile_id"] = prof_id
             dirty = True
 
     if dirty or migrated_schema or len(new_sc) != len(sc):
         try:
-            sc_p.write_text(json.dumps({"__schema__": 7, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
+            sc_p.write_text(json.dumps({"__schema__": 8, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
         except Exception:
             pass
 
@@ -1041,6 +1083,15 @@ def _build_agy_record(
     sessions_7d: set[str] = set()
 
     meta = resolve_agy_meta()
+    if aggregated:
+        allowed_hosts_tuple = ("james-mbp1", "controller", "gpu01", "netctl1", "netctl2")
+    else:
+        allowed_hosts_tuple = PROFILE_ALLOWED_HOSTS.get(
+            record_id, ("james-mbp1", "controller", "gpu01", "netctl1", "netctl2")
+        )
+    for _ah in allowed_hosts_tuple:
+        _ = host_stats[_ah]
+    mesh_allowed = set(allowed_hosts_tuple)
 
     for cid, entry in sessions_map.items():
         d = entry["data"]
@@ -1062,13 +1113,7 @@ def _build_agy_record(
         ws = d.get("ws") or "global"
         c_hosts = d.get("hosts") or ["james-mbp1"]
         c_hosts_set = set(c_hosts)
-        if record_id in ("agy-personal", "agy-census"):
-            mesh_allowed = {"james-mbp1", "controller", "gpu01"}
-        elif record_id in ("agy", "agy-sandbox"):
-            mesh_allowed = {"james-mbp1", "netctl1", "netctl2"}
-        else:
-            mesh_allowed = {"james-mbp1", "controller", "gpu01", "netctl1", "netctl2"}
-        scoped_hosts = sorted(c_hosts_set & mesh_allowed) or ["james-mbp1"]
+        scoped_hosts = sorted(c_hosts_set & mesh_allowed) or [allowed_hosts_tuple[0]]
         primary_host = "james-mbp1" if "james-mbp1" in scoped_hosts else scoped_hosts[0]
 
         c_tok = 0
@@ -1361,11 +1406,11 @@ def _build_agy_record(
     elif record_id == "agy-census":
         tier_prefix = "Census / CSVD / IEBCloud"
         auth_mode_str = "Census Profile (census-ai-ops)"
-        auth_help_str = "Census Bureau (CSVD / IEBCloud) usage in census-ai-ops (`agy-census`)."
+        auth_help_str = "Census Bureau (CSVD / IEBCloud) usage on james-mbp1 (`agy-census`)."
     elif record_id == "agy-sandbox":
         tier_prefix = f"Vertex AI ({badge})"
         auth_mode_str = "Vertex AI Sandbox"
-        auth_help_str = "Clover/Fiserv Sandbox usage on clover-sandbox (`agy-sandbox`)."
+        auth_help_str = "Sandbox usage across james-mbp1, netctl1, netctl2, controller, and gpu01 (`agy-sandbox`)."
     else:
         tier_prefix = f"Vertex AI ({badge})"
         auth_mode_str = "Vertex AI Corp"

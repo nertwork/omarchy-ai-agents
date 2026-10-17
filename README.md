@@ -69,16 +69,24 @@ omarchy plugin remove nertwork.agents
 
 ## Supported Providers & Telemetry
 
-| Module ID | Default Label | Source / Provider | Tracked Metrics & Token Analytics |
-|---|---|---|---|
-| `agy-personal` | **AGY Personal** | Google OAuth (`antigravity-cli-personal`) | Personal & Homelab (`controller-ai-ops`, `p1-ai-ops`, `smarthome-ai-ops`, `it-titan-*`) session scanning across 5 mesh nodes, Today / 7d / 30d cost & token totals |
-| `agy-census` | **AGY Census** | Google OAuth (`antigravity-cli-personal` · CSVD) | Dedicated U.S. Census Bureau (`census-ai-ops`, CSVD / IEBCloud) workspace & session telemetry, Today / 7d / 30d cost & token attribution |
-| `agy` | **AGY Clover** | Google Vertex AI (`clover-corp-ai`) | Work (`~/Work`, `clover-ai-ops`, `snv-rtr-ops`, `corp-proxmox`) session scanning + GCP Cloud Monitoring quota metrics |
-| `agy-sandbox` | **AGY Sandbox** | Secondary Antigravity GCP Project (`jfar-sandbox`) | Dedicated secondary/sandbox GCP project telemetry, workspace glob routing, independent cost & token attribution |
+| Module ID | Default Label | Source / Provider | Allowed Mesh Hosts | Tracked Metrics & Token Analytics |
+|---|---|---|---|---|
+| `agy-personal` | **AGY Personal** | Google OAuth (`antigravity-cli-personal`) | `james-mbp1`, `controller`, `gpu01` (3 nodes) | Personal & Homelab (`controller-ai-ops`, `p1-ai-ops`, `smarthome-ai-ops`, `it-titan-*`) session scanning across Homelab mesh nodes, Today / 7d / 30d cost & token totals |
+| `agy-census` | **AGY Census** | Google OAuth (`antigravity-cli-personal` · CSVD) | `james-mbp1` (1 node) | Dedicated U.S. Census Bureau (`census-ai-ops`, CSVD / IEBCloud) workspace & session telemetry on `james-mbp1`, Today / 7d / 30d cost & token attribution |
+| `agy` | **AGY Clover** | Google Vertex AI (`clover-corp-ai`) | `james-mbp1`, `netctl1`, `netctl2` (3 nodes) | Work (`~/Work`, `clover-ai-ops`, `snv-rtr-ops`, `corp-proxmox`) session scanning across Clover mesh nodes + GCP Cloud Monitoring quota metrics |
+| `agy-sandbox` | **AGY Sandbox** | Secondary Antigravity GCP Project (`clover-sandbox`) | `james-mbp1`, `controller`, `gpu01`, `netctl1`, `netctl2` (5 nodes) | Dedicated secondary/sandbox GCP project telemetry across all 5 mesh nodes, independent cost & token attribution |
+
 | `claude` | **Claude** | Claude Code (`~/.claude`) | 5-hour session & 7-day weekly rate limits, Today / 7d / 30d cost & token totals, model breakdown, top workspaces |
 | `fiserv-claude` | **Claude Work** | Secondary / Enterprise Claude Profile | Dedicated secondary/work Claude profile (`~/.claude-work` or custom `configDir`) + workspace glob routing, 5h/7d utilization, cost & token attribution |
 | `codex` | **Codex** | OpenAI Codex CLI (`~/.codex`) | 5-hour primary & 7-day secondary limit windows, Today / 30d token & session analytics, model breakdown |
 | `copilot` | **Copilot** | GitHub Copilot CLI (`~/.copilot`) | Daily prompts & sessions, output & cache-read tokens, 7-day history, model breakdown |
+
+### Per-Host AGY Profile Isolation Rules
+
+- **`james-mbp1` (Local Workstation)**: Runs all 4 AGY profiles (`agy-personal`, `agy-census`, `agy`, `agy-sandbox`).
+- **`netctl1` & `netctl2` (Clover Mesh Nodes)**: Run **ONLY** `agy` (`agy-clover` / Corp) and `agy-sandbox` (never `agy-personal` or `agy-census`).
+- **`controller` & `gpu01` (Homelab Mesh Nodes)**: Run **ONLY** `agy-personal` and `agy-sandbox` (never `agy` / `agy-clover` or `agy-census`).
+- **Active Nodes Breakdown**: The **Combined** overview displays all 5 mesh hosts (`james-mbp1`, `controller`, `gpu01`, `netctl1`, `netctl2`), while each individual module tab displays only the mesh hosts where that profile is allowed to run.
 | `grok` | **Grok** | xAI Grok CLI (`~/.grok`) | Daily prompts & sessions, input/output/cached tokens, 7-day history, model breakdown |
 
 ---

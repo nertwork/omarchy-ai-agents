@@ -113,6 +113,51 @@ Ui.Panel {
     : Style.space(960)
 
   readonly property var activeNodesBreakdown: {
+    var isCombined = !!(usage && usage.showCombinedView) || !!(root.activeProvider && root.activeProvider.id === "combined")
+    if (!isCombined && root.activeProvider) {
+      var pList = (root.activeProvider.hostsBreakdown instanceof Array) ? root.activeProvider.hostsBreakdown : []
+      if (pList.length > 0) {
+        var pOut = []
+        for (var j = 0; j < pList.length; j++) {
+          var ph = pList[j]
+          if (ph && ph.host) {
+            pOut.push({
+              host: String(ph.host),
+              role: String(ph.role || (ph.host === "james-mbp1" ? "local" : "mesh-sync")),
+              status: String(ph.status || "synced"),
+              costUsd: Number(ph.costUsd !== undefined ? ph.costUsd : (ph.costUsd30d || 0)),
+              sessions: Number(ph.sessions !== undefined ? ph.sessions : (ph.sessions30d || 0)),
+              tokens: Number(ph.tokens !== undefined ? ph.tokens : (ph.tokens30d || 0))
+            })
+          }
+        }
+        return pOut
+      }
+      var pid = String(root.activeProvider.id || "")
+      var fallbackOrder = ["james-mbp1"]
+      if (pid === "agy-personal" || pid === "claude") {
+        fallbackOrder = ["james-mbp1", "controller", "gpu01"]
+      } else if (pid === "agy" || pid === "fiserv-claude") {
+        fallbackOrder = ["james-mbp1", "netctl1", "netctl2"]
+      } else if (pid === "agy-sandbox") {
+        fallbackOrder = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
+      } else if (pid === "agy-census") {
+        fallbackOrder = ["james-mbp1"]
+      }
+      var fOut = []
+      for (var f = 0; f < fallbackOrder.length; f++) {
+        var fh = fallbackOrder[f]
+        fOut.push({
+          host: fh,
+          role: fh === "james-mbp1" ? "local" : "mesh-sync",
+          status: fh === "james-mbp1" ? "local" : "synced",
+          costUsd: fh === "james-mbp1" ? Number(root.activeProvider.thirtyDayCostUsd || 0) : 0,
+          sessions: fh === "james-mbp1" ? Number(root.activeProvider.totalSessions || 0) : 0,
+          tokens: fh === "james-mbp1" ? Number(root.activeProvider.thirtyDayTokens || 0) : 0
+        })
+      }
+      return fOut
+    }
     var map = {}
     var meshList = (usage && usage.meshHostsBreakdown instanceof Array) ? usage.meshHostsBreakdown : []
     for (var i = 0; i < meshList.length; i++) {
@@ -128,25 +173,7 @@ Ui.Panel {
         }
       }
     }
-    var pList = (root.activeProvider && root.activeProvider.hostsBreakdown instanceof Array)
-      ? root.activeProvider.hostsBreakdown
-      : []
-    if (meshList.length === 0) {
-      for (var j = 0; j < pList.length; j++) {
-        var ph = pList[j]
-        if (ph && ph.host) {
-          map[String(ph.host)] = {
-            host: String(ph.host),
-            role: String(ph.role || (ph.host === "james-mbp1" ? "local" : "mesh-sync")),
-            status: String(ph.status || "synced"),
-            costUsd: Number(ph.costUsd !== undefined ? ph.costUsd : (ph.costUsd30d || 0)),
-            sessions: Number(ph.sessions !== undefined ? ph.sessions : (ph.sessions30d || 0)),
-            tokens: Number(ph.tokens !== undefined ? ph.tokens : (ph.tokens30d || 0))
-          }
-        }
-      }
-    }
-    var order = ["controller", "gpu01", "james-mbp1", "netctl1", "netctl2"]
+    var order = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
     var out = []
     for (var k = 0; k < order.length; k++) {
       var hName = order[k]
@@ -851,99 +878,88 @@ Ui.Panel {
       // =======================================================================
       // 2. MODULAR PROVIDER SWITCHER TABS
       // =======================================================================
-      Flickable {
+      Flow {
         id: tabsFlick
         visible: !root.showSettings && usage.enabledProviders.length > 0
         width: parent.width
-        height: Style.space(38)
-        contentWidth: tabsRow.implicitWidth
-        contentHeight: height
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
+        spacing: Style.space(5)
 
-        Row {
-          id: tabsRow
-          height: parent.height
-          spacing: Style.space(6)
+        Repeater {
+          model: usage.enabledProviders
 
-          Repeater {
-            model: usage.enabledProviders
+          delegate: Rectangle {
+            id: tabPill
+            required property var modelData
+            required property int index
 
-            delegate: Rectangle {
-              id: tabPill
-              required property var modelData
-              required property int index
+            readonly property bool isSelected: !usage.showCombinedView && usage.selectedIndex === index
 
-              readonly property bool isSelected: !usage.showCombinedView && usage.selectedIndex === index
+            width: tabInnerRow.implicitWidth + Style.space(12)
+            height: Style.space(28)
+            radius: Style.cornerRadius
+            color: isSelected
+              ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.16)
+              : (tabMouse.containsMouse
+                ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.08)
+                : root.cardFill)
+            border.width: isSelected ? 1.5 : 1
+            border.color: isSelected
+              ? root.accentColor
+              : (tabMouse.containsMouse
+                ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.24)
+                : root.cardBorder)
 
-              width: tabInnerRow.implicitWidth + Style.space(18)
-              height: Style.space(34)
-              anchors.verticalCenter: parent.verticalCenter
-              radius: Style.cornerRadius
-              color: isSelected
-                ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.16)
-                : (tabMouse.containsMouse
-                  ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.08)
-                  : root.cardFill)
-              border.width: isSelected ? 1.5 : 1
-              border.color: isSelected
-                ? root.accentColor
-                : (tabMouse.containsMouse
-                  ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.24)
-                  : root.cardBorder)
+            Behavior on color { ColorAnimation { duration: 100 } }
 
-              Behavior on color { ColorAnimation { duration: 100 } }
+            Row {
+              id: tabInnerRow
+              anchors.centerIn: parent
+              spacing: Style.space(5)
 
-              Row {
-                id: tabInnerRow
-                anchors.centerIn: parent
-                spacing: Style.space(6)
+              ProviderMark {
+                anchors.verticalCenter: parent.verticalCenter
+                provider: tabPill.modelData
+                iconSize: Style.space(14)
+              }
 
-                ProviderMark {
-                  anchors.verticalCenter: parent.verticalCenter
-                  provider: tabPill.modelData
-                  iconSize: Style.space(15)
-                }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: tabPill.modelData.shortLabel || tabPill.modelData.name
+                color: tabPill.isSelected ? root.fgColor : root.mutedColor
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.weight: tabPill.isSelected ? Font.Bold : Font.Medium
+              }
+
+              Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: tabCostText.implicitWidth + Style.space(6)
+                height: Style.space(16)
+                radius: height / 2
+                color: tabPill.isSelected
+                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
 
                 Text {
-                  anchors.verticalCenter: parent.verticalCenter
+                  id: tabCostText
+                  anchors.centerIn: parent
                   textFormat: Text.PlainText
-                  text: tabPill.modelData.shortLabel || tabPill.modelData.name
-                  color: tabPill.isSelected ? root.fgColor : root.mutedColor
+                  text: usage.formatUsd(tabPill.modelData.thirtyDayCostUsd, true)
+                  color: tabPill.isSelected ? root.fgColor : root.subtleColor
                   font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                  font.weight: tabPill.isSelected ? Font.Bold : Font.Medium
-                }
-
-                Rectangle {
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: tabCostText.implicitWidth + Style.space(8)
-                  height: Style.space(18)
-                  radius: height / 2
-                  color: tabPill.isSelected
-                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
-                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
-
-                  Text {
-                    id: tabCostText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: usage.formatUsd(tabPill.modelData.thirtyDayCostUsd, true)
-                    color: tabPill.isSelected ? root.fgColor : root.subtleColor
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    font.weight: Font.DemiBold
-                  }
+                  font.pixelSize: Style.font.caption
+                  font.weight: Font.DemiBold
                 }
               }
+            }
 
-              MouseArea {
-                id: tabMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: usage.selectProvider(tabPill.index)
-              }
+            MouseArea {
+              id: tabMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: usage.selectProvider(tabPill.index)
             }
           }
         }
@@ -1023,7 +1039,7 @@ Ui.Panel {
                 id: hostCountPill
                 visible: !root.showSettings
                 anchors.verticalCenter: parent.verticalCenter
-                text: usage.localhostOnly ? "localhost" : "5 nodes"
+                text: usage.localhostOnly ? "localhost" : (root.activeNodesBreakdown.length + (root.activeNodesBreakdown.length === 1 ? " node" : " nodes"))
                 textColor: root.mutedColor
               }
             }
@@ -1818,7 +1834,7 @@ Ui.Panel {
                   width: parent.width - syncNodesInlineBtn.width
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: "ACTIVE NODES (30D · 5 MESH HOSTS)"
+                  text: "ACTIVE NODES (30D · " + root.activeNodesBreakdown.length + (root.activeNodesBreakdown.length === 1 ? " HOST)" : " MESH HOSTS)")
                   color: root.subtleColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption

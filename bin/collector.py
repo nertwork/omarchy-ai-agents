@@ -28,6 +28,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -277,27 +278,37 @@ def collect_agy_and_claude(
     claude_sum = claude_profiles["summary"]
     grand_summary = _build_grand_summary(agy_sum, claude_sum, agy_split, claude_split)
 
+    local_host = socket.gethostname().split(".")[0] or "james-mbp1"
+    allowed_agy_profiles = set(
+        agy_core.HOST_ALLOWED_PROFILES.get(
+            local_host, ("agy-personal", "agy-census", "agy", "agy-sandbox")
+        )
+    )
+
     if want_agy or want_agy_sandbox:
         if agy_split:
             if want_agy:
-                rec_agy = _enrich_record_with_summary(agy_profiles["agy"], agy_sum, grand_summary)
-                write_state_file("agy", rec_agy)
-                rec_pers = _enrich_record_with_summary(agy_profiles["agy-personal"], agy_sum, grand_summary)
-                write_state_file("agy-personal", rec_pers)
-                rec_cens = _enrich_record_with_summary(agy_profiles["agy-census"], agy_sum, grand_summary)
-                write_state_file("agy-census", rec_cens)
-            if want_agy_sandbox is not False:
+                for pid in ("agy", "agy-personal", "agy-census"):
+                    if pid in allowed_agy_profiles:
+                        rec_p = _enrich_record_with_summary(agy_profiles[pid], agy_sum, grand_summary)
+                        write_state_file(pid, rec_p)
+                    else:
+                        remove_state_file(pid)
+            if want_agy_sandbox is not False and "agy-sandbox" in allowed_agy_profiles:
                 rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
                 write_state_file("agy-sandbox", rec_sb)
+            elif "agy-sandbox" not in allowed_agy_profiles:
+                remove_state_file("agy-sandbox")
         else:
             rec_all_agy = _enrich_record_with_summary(agy_profiles["all"], agy_sum, grand_summary)
             write_state_file("agy", rec_all_agy)
-            if want_agy_sandbox:
+            if want_agy_sandbox and "agy-sandbox" in allowed_agy_profiles:
                 rec_sb = _enrich_record_with_summary(agy_profiles["agy-sandbox"], agy_sum, grand_summary)
                 write_state_file("agy-sandbox", rec_sb)
             else:
                 remove_state_file("agy-sandbox")
                 remove_state_file("agy-personal")
+                remove_state_file("agy-census")
 
     if want_claude or want_fiserv_claude:
         if claude_split:
