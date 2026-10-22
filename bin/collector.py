@@ -232,6 +232,10 @@ def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claud
         "splitProfiles": bool(agy_split or claude_split),
         "agySplitProfiles": bool(agy_split),
         "claudeSplitProfiles": bool(claude_split),
+        "barCostWindow": "today",
+        "todayCostUsd": round(grand_total.get("todayCostUsd", 0.0), 2),
+        "sevenDayCostUsd": round(grand_total.get("sevenDayCostUsd", 0.0), 2),
+        "thirtyDayCostUsd": round(grand_total.get("thirtyDayCostUsd", 0.0), 2),
         "grandTotal": grand_total,
         "workVsPersonal": {
             "workCostUsd30d": work_30d,

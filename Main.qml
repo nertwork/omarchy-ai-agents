@@ -285,7 +285,7 @@ Item {
       showAggregatedSummary: true,
       barDisplayMode: "aggregated",
       showBarCost: true,
-      barCostWindow: "30d",
+      barCostWindow: "today",
       pollIntervalSeconds: 300,
       terminalCommand: "",
       providers: {}
@@ -370,7 +370,7 @@ Item {
   readonly property bool showAggregatedSummary: !!effectiveSettings.showAggregatedSummary
   readonly property string barDisplayMode: String(effectiveSettings.barDisplayMode || "aggregated")
   readonly property bool showBarCost: effectiveSettings.showBarCost !== undefined ? !!effectiveSettings.showBarCost : true
-  readonly property string barCostWindow: String(effectiveSettings.barCostWindow || "30d")
+  readonly property string barCostWindow: String(effectiveSettings.barCostWindow || "today")
   readonly property int pollIntervalSeconds: Math.max(60, Math.min(3600, Number(effectiveSettings.pollIntervalSeconds || 300)))
   readonly property string terminalCommand: String(effectiveSettings.terminalCommand || "").trim()
 
@@ -1064,7 +1064,7 @@ Item {
       + " · Census 30d: " + root.formatUsd(root.workVsPersonalTotals.census30dCostUsd, false)
       + " · Personal 30d: " + root.formatUsd(root.workVsPersonalTotals.personal30dCostUsd, false) + "]"
     if (root.currentProvider) {
-      return root.currentProvider.shortLabel + " (" + root.formatUsd(root.currentProvider.thirtyDayCostUsd, false) + " 30d)  |  " + totalLine
+      return root.currentProvider.shortLabel + " (Today " + root.formatUsd(root.currentProvider.todayCostUsd, false) + " · 30d " + root.formatUsd(root.currentProvider.thirtyDayCostUsd, false) + ")  |  " + totalLine
     }
     return totalLine
   }
@@ -1246,23 +1246,32 @@ Item {
     var outM = Number(outTok || 0) / 1000000.0
     var cacheM = Number(cacheTok || 0) / 1000000.0
 
-    if (m.indexOf("opus") !== -1) {
+    if (m.indexOf("opus-4-1") !== -1 || m.indexOf("opus-4-0") !== -1 || m === "claude-opus-4") {
+      return inM * 15.0 + outM * 75.0 + cacheM * 1.50
+    }
+    if (m.indexOf("opus") !== -1 || m.indexOf("fable") !== -1) {
       return inM * 5.0 + outM * 25.0 + cacheM * 0.50
     }
     if (m.indexOf("sonnet") !== -1) {
       return inM * 3.0 + outM * 15.0 + cacheM * 0.30
     }
-    if (m.indexOf("haiku") !== -1) {
+    if (m.indexOf("3-5-haiku") !== -1) {
       return inM * 0.80 + outM * 4.0 + cacheM * 0.08
     }
-    if (m.indexOf("pro") !== -1 || m.indexOf("argon") !== -1) {
-      return inM * 1.25 + outM * 10.0 + cacheM * 0.3125
+    if (m.indexOf("haiku") !== -1) {
+      return inM * 1.0 + outM * 5.0 + cacheM * 0.10
+    }
+    if (m.indexOf("grok") !== -1) {
+      return inM * 3.0 + outM * 15.0 + cacheM * 0.75
+    }
+    if (m.indexOf("pro") !== -1 || m.indexOf("argon") !== -1 || m.indexOf("gpt-5") !== -1 || m.indexOf("codex") !== -1) {
+      return inM * 1.25 + outM * 10.0 + cacheM * 0.125
     }
     if (m.indexOf("lite") !== -1) {
-      return inM * 0.30 + outM * 2.50 + cacheM * 0.03
+      return inM * 0.075 + outM * 0.30 + cacheM * 0.0075
     }
-    // Default Flash pricing
-    return inM * 0.75 + outM * 3.75 + cacheM * 0.075
+    // Default Gemini Flash pricing
+    return inM * 0.15 + outM * 0.60 + cacheM * 0.015
   }
 
   function normalizedRecord(id) {

@@ -288,5 +288,8 @@
   "activation": "on-demand",
   "omarchy": {
     "clonedFrom": "omarchy.agents"
-  }
+  },
+  "barCostWindow": "today",
+  "showBarCost": true,
+  "dailyQuotaUsd": 50
 }

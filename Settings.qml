@@ -339,8 +339,8 @@ Item {
 
       ToggleRow {
         label: "Show cost in status bar"
-        badgeText: root.usage && root.usage.barDisplayMode === "active" ? "Active Module" : "Aggregated $"
-        description: "Render live 30d USD spend next to the AI Agents status bar icon"
+        badgeText: root.usage && root.usage.barDisplayMode === "active" ? "Active Module" : (root.usage && root.usage.barCostWindow === "30d" ? "30d $" : "Today $")
+        description: "Render live " + (root.usage && root.usage.barCostWindow === "30d" ? "30d" : "daily (Today)") + " USD spend next to the AI Agents status bar icon (turns red ≥ $" + (root.usage ? root.usage.dailyQuotaUsd : 50) + "/day)"
         checked: root.usage ? root.usage.showBarCost : true
         onToggled: function(val) {
           if (root.usage) root.usage.setSetting("showBarCost", val)
@@ -348,8 +348,18 @@ Item {
       }
 
       ToggleRow {
+        label: "Show current daily cost"
+        badgeText: root.usage && root.usage.barCostWindow === "30d" ? "30d Window" : ("Today ($" + (root.usage ? root.usage.dailyQuotaUsd : 50) + " budget)")
+        description: "Default to current daily (Today) cost in the status bar, tabs, and summary strips instead of 30-day cumulative cost"
+        checked: root.usage ? (root.usage.barCostWindow !== "30d") : true
+        onToggled: function(val) {
+          if (root.usage) root.usage.setSetting("barCostWindow", val ? "today" : "30d")
+        }
+      }
+
+      ToggleRow {
         label: "Bar widget displays aggregated total"
-        badgeText: "30d Rollup"
+        badgeText: root.usage && root.usage.barCostWindow === "30d" ? "30d Rollup" : "Daily Rollup"
         description: "When enabled, bar cost shows combined spend across enabled modules; otherwise shows active tab"
         checked: root.usage ? (root.usage.barDisplayMode !== "active") : true
         onToggled: function(val) {

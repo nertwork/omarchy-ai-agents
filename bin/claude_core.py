@@ -20,13 +20,22 @@ import subprocess
 import sys
 import time
 
-# Official Anthropic pricing per 1M tokens: (input, output, cache_read, cache_write)
+# Best-guess Anthropic pricing per 1M tokens: (input, output, cache_read, cache_write)
 CLAUDE_COSTS = {
+    "claude-opus-4-7": (5.0, 25.0, 0.50, 6.25),
     "claude-opus-4-6": (5.0, 25.0, 0.50, 6.25),
     "claude-opus-4-5": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-1": (15.0, 75.0, 1.50, 18.75),
+    "claude-opus-4": (15.0, 75.0, 1.50, 18.75),
+    "claude-fable-5": (5.0, 25.0, 0.50, 6.25),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
     "claude-sonnet-4-5": (3.0, 15.0, 0.30, 3.75),
-    "claude-haiku-4-5": (0.80, 4.0, 0.08, 1.00),
+    "claude-sonnet-4": (3.0, 15.0, 0.30, 3.75),
+    "claude-3-7-sonnet": (3.0, 15.0, 0.30, 3.75),
+    "claude-3-5-sonnet": (3.0, 15.0, 0.30, 3.75),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10, 1.25),
+    "claude-3-5-haiku": (0.80, 4.0, 0.08, 1.00),
+    "claude-3-haiku": (0.25, 1.25, 0.03, 0.30),
 }
 
 DEFAULT_WORK_PROJECT_PATTERNS: tuple[str, ...] = (
@@ -375,12 +384,15 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
         elif t == "cost-state":
             last_cost_state = obj
 
+    per_msg_cost = 0.0
     for it, ot, cr, cw, m_id in msg_usage.values():
         s_it += it
         s_ot += ot
         s_cr += cr
         s_cw += cw
         s_tok += it + ot + cr + cw
+        m_ci, m_co, m_ccr, m_ccw = CLAUDE_COSTS.get(m_id, (3.0, 15.0, 0.30, 3.75))
+        per_msg_cost += (it * m_ci + ot * m_co + cr * m_ccr + cw * m_ccw) / 1e6
 
     if s_tok == 0 and last_cost_state:
         cs_cost = float(last_cost_state.get("totalCostUSD") or last_cost_state.get("totalCost") or 0.0)
@@ -404,10 +416,13 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
             s_p = max(1, len(lines) // 2)
 
     if s_tok > 0:
-        ci, co, ccr, ccw = CLAUDE_COSTS.get(s_mod, (3.0, 15.0, 0.30, 3.75))
-        calc_cost = (s_it * ci + s_ot * co + s_cr * ccr + s_cw * ccw) / 1e6
-        if calc_cost > 0:
-            s_cost = calc_cost
+        if per_msg_cost > 0:
+            s_cost = per_msg_cost
+        else:
+            ci, co, ccr, ccw = CLAUDE_COSTS.get(s_mod, (3.0, 15.0, 0.30, 3.75))
+            calc_cost = (s_it * ci + s_ot * co + s_cr * ccr + s_cw * ccw) / 1e6
+            if calc_cost > 0:
+                s_cost = calc_cost
 
     return {
         "sid": sid,

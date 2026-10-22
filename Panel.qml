@@ -62,7 +62,11 @@ Ui.Panel {
     property string barCostLabel: ""
     property string barTooltipText: "AI Agents Usage & Quota"
     property string terminalCommand: "xdg-terminal-exec"
-    property bool localhostOnly: true
+    property bool localhostOnly: false
+    property real dailyQuotaUsd: 50
+    property bool isOverDailyQuota: false
+    property bool isActiveProviderOverDailyQuota: false
+    property bool isBarOverDailyQuota: false
     property bool isRefreshing: false
     property bool refreshing: false
     property real aggregatedTotalTodayCost: 0
@@ -71,8 +75,8 @@ Ui.Panel {
     property real aggregatedTotal30dTokens: 0
     property var workVsPersonalTotals: ({ personalTodayCostUsd: 0, personal7dCostUsd: 0, personal30dCostUsd: 0, personal30dTokens: 0, censusTodayCostUsd: 0, census7dCostUsd: 0, census30dCostUsd: 0, census30dTokens: 0, workTodayCostUsd: 0, work7dCostUsd: 0, work30dCostUsd: 0, work30dTokens: 0 })
     property var meshHostsBreakdown: []
-    property var agyFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
-    property var claudeFamilyTotals: ({ count: 0, cost30d: 0, tokens30d: 0 })
+    property var agyFamilyTotals: ({ count: 0, todayCostUsd: 0, thirtyDayCostUsd: 0, todayTokens: 0, thirtyDayTokens: 0 })
+    property var claudeFamilyTotals: ({ count: 0, todayCostUsd: 0, thirtyDayCostUsd: 0, todayTokens: 0, thirtyDayTokens: 0 })
     signal requestOpen()
     signal requestClose()
     signal requestToggle()
@@ -199,7 +203,10 @@ Ui.Panel {
   readonly property color bgColor: Color.popups.background
   readonly property color borderColor: Color.popups.border
   readonly property color accentColor: Color.accent
-  readonly property color urgentColor: Color.urgent
+  readonly property color urgentColor: Color.urgent ? Color.urgent : "#e06c75"
+  readonly property bool isBarOverDailyQuota: usage.isBarOverDailyQuota !== undefined
+    ? !!usage.isBarOverDailyQuota
+    : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
   readonly property color mutedColor: Qt.darker(fgColor, 1.35)
   readonly property color subtleColor: Qt.darker(fgColor, 1.72)
   readonly property color cardFill: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.035)
@@ -249,7 +256,9 @@ Ui.Panel {
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: "󱚣"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: root.isBarOverDailyQuota
+          ? root.urgentColor
+          : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
         font.family: Style.font.family
         font.pixelSize: Style.font.icon
       }
@@ -260,10 +269,12 @@ Ui.Panel {
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.usage.barCostLabel
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: root.isBarOverDailyQuota
+          ? root.urgentColor
+          : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
-        font.weight: Font.DemiBold
+        font.weight: root.isBarOverDailyQuota ? Font.Bold : Font.DemiBold
       }
     }
 
@@ -708,11 +719,15 @@ Ui.Panel {
             spacing: Style.space(6)
 
             Repeater {
-              model: [
-                { label: "Work (30d):", today: usage.workVsPersonalTotals.workTodayCostUsd, d30: usage.workVsPersonalTotals.work30dCostUsd, accent: false },
-                { label: "Census (30d):", today: usage.workVsPersonalTotals.censusTodayCostUsd, d30: usage.workVsPersonalTotals.census30dCostUsd, accent: true },
-                { label: "Personal (30d):", today: usage.workVsPersonalTotals.personalTodayCostUsd, d30: usage.workVsPersonalTotals.personal30dCostUsd, accent: false }
-              ]
+              model: {
+                var isToday = usage.barCostWindow !== "30d"
+                var sfx = isToday ? " (Today):" : " (30d):"
+                return [
+                  { label: "Work" + sfx, cost: isToday ? usage.workVsPersonalTotals.workTodayCostUsd : usage.workVsPersonalTotals.work30dCostUsd, accent: false },
+                  { label: "Census" + sfx, cost: isToday ? usage.workVsPersonalTotals.censusTodayCostUsd : usage.workVsPersonalTotals.census30dCostUsd, accent: true },
+                  { label: "Personal" + sfx, cost: isToday ? usage.workVsPersonalTotals.personalTodayCostUsd : usage.workVsPersonalTotals.personal30dCostUsd, accent: false }
+                ]
+              }
               delegate: Rectangle {
                 required property var modelData
                 width: (parent.width - Style.space(12)) / 3
@@ -744,7 +759,7 @@ Ui.Panel {
                   Text {
                     width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(10) - envLbl.implicitWidth - parent.spacing))
                     textFormat: Text.PlainText
-                    text: usage.formatUsd(modelData.d30, false)
+                    text: usage.formatUsd(modelData.cost, false)
                     color: root.fgColor
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -792,8 +807,8 @@ Ui.Panel {
                 Text {
                   width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - agyFamLabel.implicitWidth - parent.spacing))
                   textFormat: Text.PlainText
-                  text: usage.formatUsd(usage.agyFamilyTotals.thirtyDayCostUsd, false)
-                    + " · " + usage.formatCompactNumber(usage.agyFamilyTotals.thirtyDayTokens)
+                  text: usage.formatUsd(usage.barCostWindow !== "30d" ? usage.agyFamilyTotals.todayCostUsd : usage.agyFamilyTotals.thirtyDayCostUsd, false)
+                    + " · " + usage.formatCompactNumber(usage.barCostWindow !== "30d" ? usage.agyFamilyTotals.todayTokens : usage.agyFamilyTotals.thirtyDayTokens)
                   color: root.fgColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -833,8 +848,8 @@ Ui.Panel {
                 Text {
                   width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(12) - claudeFamLabel.implicitWidth - parent.spacing))
                   textFormat: Text.PlainText
-                  text: usage.formatUsd(usage.claudeFamilyTotals.thirtyDayCostUsd, false)
-                    + " · " + usage.formatCompactNumber(usage.claudeFamilyTotals.thirtyDayTokens)
+                  text: usage.formatUsd(usage.barCostWindow !== "30d" ? usage.claudeFamilyTotals.todayCostUsd : usage.claudeFamilyTotals.thirtyDayCostUsd, false)
+                    + " · " + usage.formatCompactNumber(usage.barCostWindow !== "30d" ? usage.claudeFamilyTotals.todayTokens : usage.claudeFamilyTotals.thirtyDayTokens)
                   color: root.fgColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -973,7 +988,7 @@ Ui.Panel {
                   id: tabCostText
                   anchors.centerIn: parent
                   textFormat: Text.PlainText
-                  text: usage.formatUsd(tabPill.modelData.thirtyDayCostUsd, true)
+                  text: usage.formatUsd(usage.barCostWindow !== "30d" ? tabPill.modelData.todayCostUsd : tabPill.modelData.thirtyDayCostUsd, true)
                   color: tabPill.isSelected ? root.fgColor : root.subtleColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -1478,15 +1493,23 @@ Ui.Panel {
 
             SettingsToggleRow {
               label: "Show cost in status bar"
-              badgeText: root.usage.barDisplayMode === "active" ? "Active Module" : "Aggregated $"
-              description: "Render live 30d USD spend next to the AI Agents status bar icon"
+              badgeText: root.usage.barDisplayMode === "active" ? "Active Module" : (root.usage.barCostWindow !== "30d" ? "Today $" : "30d $")
+              description: "Render live " + (root.usage.barCostWindow !== "30d" ? "daily (Today)" : "30d") + " USD spend next to the AI Agents status bar icon (turns red ≥ $" + root.usage.dailyQuotaUsd + "/day)"
               checked: root.usage.showBarCost
               onToggled: function(val) { root.usage.setSetting("showBarCost", val) }
             }
 
             SettingsToggleRow {
+              label: "Show current daily cost"
+              badgeText: root.usage.barCostWindow !== "30d" ? "Today ($" + root.usage.dailyQuotaUsd + " budget)" : "30d Window"
+              description: "Default to current daily (Today) cost in the status bar, tabs, and summary strips instead of 30-day cumulative cost"
+              checked: root.usage.barCostWindow !== "30d"
+              onToggled: function(val) { root.usage.setSetting("barCostWindow", val ? "today" : "30d") }
+            }
+
+            SettingsToggleRow {
               label: "Bar widget displays aggregated total"
-              badgeText: "30d Rollup"
+              badgeText: root.usage.barCostWindow !== "30d" ? "Daily Rollup" : "30d Rollup"
               description: "When enabled, bar cost shows combined spend across enabled modules; otherwise shows active tab"
               checked: root.usage.barDisplayMode !== "active"
               onToggled: function(val) { root.usage.setSetting("barDisplayMode", val ? "aggregated" : "active") }

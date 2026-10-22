@@ -40,39 +40,69 @@ import urllib.parse
 import urllib.request
 
 MODEL_MAP = {
+    "MODEL_GOOGLE_GEMINI_4_ARGON": "gemini-4-argon",
     "MODEL_GOOGLE_GEMINI_PRO_3_1": "gemini-3.1-pro-high",
     "MODEL_GOOGLE_GEMINI_PRO_3_1_LOW": "gemini-3.1-pro-low",
     "MODEL_GOOGLE_GEMINI_PRO_3": "gemini-3-pro",
+    "MODEL_GOOGLE_GEMINI_FLASH_3_8": "gemini-3.8-flash",
+    "MODEL_GOOGLE_GEMINI_FLASH_3_7": "gemini-3.7-flash",
+    "MODEL_GOOGLE_GEMINI_FLASH_3_6": "gemini-3.6-flash",
+    "MODEL_GOOGLE_GEMINI_FLASH_3_5": "gemini-3.5-flash",
     "MODEL_GOOGLE_GEMINI_FLASH_3": "gemini-3-flash",
     "MODEL_GOOGLE_GEMINI_FLASH_LITE_3": "gemini-3-flash-lite",
+    "MODEL_CLAUDE_4_7_OPUS": "claude-opus-4-7",
     "MODEL_CLAUDE_4_6_OPUS": "claude-opus-4-6",
     "MODEL_CLAUDE_4_6_SONNET": "claude-sonnet-4-6",
     "MODEL_CLAUDE_4_5_SONNET_THINKING": "claude-sonnet-4-5",
     "MODEL_CLAUDE_4_5_OPUS_THINKING": "claude-opus-4-5",
     "MODEL_CLAUDE_4_5_SONNET": "claude-sonnet-4-5",
+    "MODEL_CLAUDE_4_5_HAIKU": "claude-haiku-4-5",
 }
 
-# Official Vertex AI pricing per 1M tokens: (uncached_input, output, cache_read)
+# Best-guess Vertex AI / Anthropic pricing per 1M tokens: (uncached_input, output, cache_read)
 COST_PER_M = {
     "gemini-4-argon": (1.25, 10.0, 0.125),
+    "gemini-4-argon-high": (1.25, 10.0, 0.125),
+    "gemini-4-argon-medium": (1.25, 10.0, 0.125),
+    "gemini-4-argon-low": (1.25, 10.0, 0.125),
+    "gemini-3.1-pro": (1.25, 10.0, 0.125),
     "gemini-3.1-pro-high": (1.25, 10.0, 0.125),
     "gemini-3.1-pro-low": (1.25, 10.0, 0.125),
     "gemini-3.1-pro-preview": (1.25, 10.0, 0.125),
     "gemini-3-pro": (1.25, 10.0, 0.125),
+    "gemini-3-pro-preview": (1.25, 10.0, 0.125),
     "gemini-2.5-pro": (1.25, 10.0, 0.125),
     "gemini-3.8-flash": (0.15, 0.60, 0.015),
+    "gemini-3.8-flash-high": (0.15, 0.60, 0.015),
+    "gemini-3.8-flash-medium": (0.15, 0.60, 0.015),
+    "gemini-3.8-flash-low": (0.15, 0.60, 0.015),
     "gemini-3.7-flash": (0.15, 0.60, 0.015),
+    "gemini-3.7-flash-high": (0.15, 0.60, 0.015),
+    "gemini-3.7-flash-medium": (0.15, 0.60, 0.015),
+    "gemini-3.7-flash-low": (0.15, 0.60, 0.015),
     "gemini-3.6-flash": (0.15, 0.60, 0.015),
+    "gemini-3.6-flash-high": (0.15, 0.60, 0.015),
+    "gemini-3.6-flash-medium": (0.15, 0.60, 0.015),
+    "gemini-3.6-flash-low": (0.15, 0.60, 0.015),
     "gemini-3.5-flash": (0.15, 0.60, 0.015),
     "gemini-3-flash": (0.15, 0.60, 0.015),
+    "gemini-3-flash-preview": (0.15, 0.60, 0.015),
     "gemini-2.5-flash": (0.15, 0.60, 0.015),
+    "gemini-2.0-flash-001": (0.15, 0.60, 0.015),
+    "gemini-3.5-flash-lite": (0.075, 0.30, 0.0075),
+    "gemini-3.1-flash-lite": (0.075, 0.30, 0.0075),
+    "gemini-3.1-flash-lite-preview": (0.075, 0.30, 0.0075),
     "gemini-3-flash-lite": (0.075, 0.30, 0.0075),
     "gemini-2.5-flash-lite": (0.075, 0.30, 0.0075),
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
     "claude-opus-4-5": (5.0, 25.0, 0.50),
+    "claude-fable-5": (5.0, 25.0, 0.50),
+    "claude-fable-5-1": (5.0, 25.0, 0.50),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
     "claude-sonnet-4-5": (3.0, 15.0, 0.30),
-    "claude-haiku-4-5": (0.80, 4.0, 0.08),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+    "claude-3-5-haiku": (0.80, 4.0, 0.08),
 }
 
 # Match only Vertex AI / Google Cloud resource paths (`projects/<id>/locations/...`)
@@ -110,10 +140,10 @@ def _cost_rates(model_id: str) -> tuple[float, float, float]:
     if "flash" in m:
         return (0.15, 0.60, 0.015)
     if "haiku" in m:
-        return (0.80, 4.0, 0.08)
+        return (0.80, 4.0, 0.08) if "3-" in m or "3.5" in m else (1.0, 5.0, 0.10)
     if "sonnet" in m:
         return (3.0, 15.0, 0.30)
-    if "opus" in m:
+    if "opus" in m or "fable" in m:
         return (5.0, 25.0, 0.50)
     return (1.25, 10.0, 0.125)
 
