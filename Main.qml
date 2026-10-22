@@ -386,6 +386,7 @@ Item {
   signal requestOpen()
   signal requestClose()
   signal requestToggle()
+  signal requestToggleSettings()
 
   function isProviderEnabled(providerId) {
     var id = String(providerId || "").toLowerCase()
@@ -1566,7 +1567,7 @@ Item {
 
   function formatUsd(value, compact) {
     var num = Math.max(0, Number(value || 0))
-    if (compact && num >= 100) {
+    if (compact && (num >= 100 || Math.abs(num - Math.round(num)) < 0.005)) {
       return "$" + Math.round(num)
     }
     return "$" + num.toFixed(2)
@@ -1706,6 +1707,9 @@ Item {
     }
     function refresh(): string { root.refreshAll(true); return "refreshing" }
     function status(): string { return root.statusJson() }
+    function settings(): void { root.requestToggleSettings() }
+    function combined(): void { root.showCombinedView = !root.showCombinedView }
+    function select(idx: int): void { root.selectProvider(idx) }
   }
 
   Timer {

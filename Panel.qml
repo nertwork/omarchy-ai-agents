@@ -72,6 +72,7 @@ Ui.Panel {
     property real aggregatedTotalTodayCost: 0
     property real aggregatedTotal7dCost: 0
     property real aggregatedTotal30dCost: 0
+    property real aggregatedTotalTodayTokens: 0
     property real aggregatedTotal30dTokens: 0
     property var workVsPersonalTotals: ({ personalTodayCostUsd: 0, personal7dCostUsd: 0, personal30dCostUsd: 0, personal30dTokens: 0, censusTodayCostUsd: 0, census7dCostUsd: 0, census30dCostUsd: 0, census30dTokens: 0, workTodayCostUsd: 0, work7dCostUsd: 0, work30dCostUsd: 0, work30dTokens: 0 })
     property var meshHostsBreakdown: []
@@ -80,6 +81,7 @@ Ui.Panel {
     signal requestOpen()
     signal requestClose()
     signal requestToggle()
+    signal requestToggleSettings()
     function formatUsd(v, c) { return "$0.00" }
     function formatCompactNumber(v) { return "0" }
     function formatShortDay(v) { return "" }
@@ -203,7 +205,7 @@ Ui.Panel {
   readonly property color bgColor: Color.popups.background
   readonly property color borderColor: Color.popups.border
   readonly property color accentColor: Color.accent
-  readonly property color urgentColor: Color.urgent ? Color.urgent : "#e06c75"
+  readonly property color urgentColor: "#ff4d4d"
   readonly property bool isBarOverDailyQuota: usage.isBarOverDailyQuota !== undefined
     ? !!usage.isBarOverDailyQuota
     : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
@@ -244,6 +246,17 @@ Ui.Panel {
       } else if (mouseButton === Qt.MiddleButton) {
         root.usage.cycleProvider(1)
       }
+    }
+
+    Rectangle {
+      visible: root.isBarOverDailyQuota && root.shouldShowCostPill
+      anchors.centerIn: parent
+      width: barRow.implicitWidth + Style.space(12)
+      height: Math.min(parent.height - Style.space(4), Style.space(22))
+      radius: height / 2
+      color: Qt.rgba(1.0, 0.24, 0.24, 0.22)
+      border.width: 1
+      border.color: Qt.rgba(1.0, 0.30, 0.30, 0.72)
     }
 
     Row {
@@ -297,6 +310,7 @@ Ui.Panel {
     function onRequestOpen() { root.open() }
     function onRequestClose() { root.close() }
     function onRequestToggle() { root.toggle() }
+    function onRequestToggleSettings() { root.showSettings = !root.showSettings }
   }
 
   readonly property var availableIcons: ({
@@ -626,22 +640,28 @@ Ui.Panel {
               spacing: Style.space(2)
 
               Row {
+                width: parent.width
                 spacing: Style.space(6)
+                clip: true
 
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: usage.localhostOnly ? "LOCALHOST AI SPEND" : "MULTI-HOST AI SPEND · 5 NODES"
+                  text: usage.localhostOnly
+                    ? "LOCAL AI SPEND"
+                    : (Number(usage.dailyQuotaUsd || 0) > 0 ? "MULTI-HOST AI SPEND" : "MULTI-HOST AI SPEND · 5 NODES")
                   color: aggregateBanner.overQuota ? root.urgentColor : root.accentColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   font.weight: Font.Bold
-                  font.letterSpacing: 0.7
+                  font.letterSpacing: 0.6
                 }
 
                 BadgePill {
                   anchors.verticalCenter: parent.verticalCenter
-                  text: usage.formatCompactNumber(usage.aggregatedTotal30dTokens) + " tok (30d)"
+                  text: usage.barCostWindow !== "30d"
+                    ? (usage.formatCompactNumber(usage.aggregatedTotalTodayTokens) + " tok")
+                    : (usage.formatCompactNumber(usage.aggregatedTotal30dTokens) + " tok (30d)")
                   textColor: root.fgColor
                   pillFill: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.08)
                 }
@@ -650,14 +670,14 @@ Ui.Panel {
                   visible: Number(usage.dailyQuotaUsd || 0) > 0
                   anchors.verticalCenter: parent.verticalCenter
                   text: aggregateBanner.overQuota
-                    ? ("OVER " + usage.formatUsd(usage.dailyQuotaUsd, true) + " QUOTA")
+                    ? ("OVER " + usage.formatUsd(usage.dailyQuotaUsd, true) + "/D")
                     : ("Quota " + usage.formatUsd(usage.dailyQuotaUsd, true) + "/d")
                   textColor: aggregateBanner.overQuota ? root.urgentColor : root.mutedColor
                   pillFill: aggregateBanner.overQuota
-                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.18)
+                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.20)
                     : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
                   pillBorder: aggregateBanner.overQuota
-                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.45)
+                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.55)
                     : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
                 }
               }
@@ -730,17 +750,22 @@ Ui.Panel {
               }
               delegate: Rectangle {
                 required property var modelData
+                readonly property bool isEnvOverQuota: usage.barCostWindow !== "30d" && Number(usage.dailyQuotaUsd || 0) > 0 && Number(modelData.cost || 0) >= Number(usage.dailyQuotaUsd || 50)
                 width: (parent.width - Style.space(12)) / 3
                 height: Style.space(22)
                 radius: Style.space(6)
                 clip: true
-                color: modelData.accent
-                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
-                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                color: isEnvOverQuota
+                  ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.14)
+                  : (modelData.accent
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06))
                 border.width: 1
-                border.color: modelData.accent
-                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.24)
-                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16)
+                border.color: isEnvOverQuota
+                  ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.45)
+                  : (modelData.accent
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.24)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.16))
 
                 Row {
                   width: Math.min(implicitWidth, parent.width - Style.space(10))
@@ -751,7 +776,7 @@ Ui.Panel {
                     id: envLbl
                     textFormat: Text.PlainText
                     text: modelData.label
-                    color: root.mutedColor
+                    color: isEnvOverQuota ? root.urgentColor : root.mutedColor
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                   }
@@ -760,7 +785,7 @@ Ui.Panel {
                     width: Math.min(implicitWidth, Math.max(0, parent.parent.width - Style.space(10) - envLbl.implicitWidth - parent.spacing))
                     textFormat: Text.PlainText
                     text: usage.formatUsd(modelData.cost, false)
-                    color: root.fgColor
+                    color: isEnvOverQuota ? root.urgentColor : root.fgColor
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                     font.weight: Font.Bold
@@ -936,21 +961,24 @@ Ui.Panel {
             required property int index
 
             readonly property bool isSelected: !usage.showCombinedView && usage.selectedIndex === index
+            readonly property bool isTabOverQuota: usage.barCostWindow !== "30d" && Number(usage.dailyQuotaUsd || 0) > 0 && Number(tabPill.modelData.todayCostUsd || 0) >= Number(usage.dailyQuotaUsd || 50)
 
             width: tabInnerRow.implicitWidth + Style.space(12)
             height: Style.space(28)
             radius: Style.cornerRadius
             color: isSelected
-              ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.16)
+              ? (isTabOverQuota ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.16) : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.16))
               : (tabMouse.containsMouse
                 ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.08)
                 : root.cardFill)
-            border.width: isSelected ? 1.5 : 1
+            border.width: (isSelected || isTabOverQuota) ? 1.5 : 1
             border.color: isSelected
-              ? root.accentColor
-              : (tabMouse.containsMouse
-                ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.24)
-                : root.cardBorder)
+              ? (isTabOverQuota ? root.urgentColor : root.accentColor)
+              : (isTabOverQuota
+                ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.55)
+                : (tabMouse.containsMouse
+                  ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.24)
+                  : root.cardBorder))
 
             Behavior on color { ColorAnimation { duration: 100 } }
 
@@ -969,10 +997,10 @@ Ui.Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
                 text: tabPill.modelData.shortLabel || tabPill.modelData.name
-                color: tabPill.isSelected ? root.fgColor : root.mutedColor
+                color: tabPill.isSelected ? root.fgColor : (tabPill.isTabOverQuota ? root.fgColor : root.mutedColor)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
-                font.weight: tabPill.isSelected ? Font.Bold : Font.Medium
+                font.weight: (tabPill.isSelected || tabPill.isTabOverQuota) ? Font.Bold : Font.Medium
               }
 
               Rectangle {
@@ -980,19 +1008,21 @@ Ui.Panel {
                 width: tabCostText.implicitWidth + Style.space(6)
                 height: Style.space(16)
                 radius: height / 2
-                color: tabPill.isSelected
-                  ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
-                  : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                color: tabPill.isTabOverQuota
+                  ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.22)
+                  : (tabPill.isSelected
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06))
 
                 Text {
                   id: tabCostText
                   anchors.centerIn: parent
                   textFormat: Text.PlainText
                   text: usage.formatUsd(usage.barCostWindow !== "30d" ? tabPill.modelData.todayCostUsd : tabPill.modelData.thirtyDayCostUsd, true)
-                  color: tabPill.isSelected ? root.fgColor : root.subtleColor
+                  color: tabPill.isTabOverQuota ? root.urgentColor : (tabPill.isSelected ? root.fgColor : root.subtleColor)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.weight: Font.DemiBold
+                  font.weight: tabPill.isTabOverQuota ? Font.Bold : Font.DemiBold
                 }
               }
             }
@@ -1091,10 +1121,9 @@ Ui.Panel {
               width: parent.width
               textFormat: Text.PlainText
               text: root.showSettings
-                ? "Configure modular profiles, localhost telemetry, and status bar display"
+                ? "Configure modular profiles, daily budget alerts, and status bar display"
                 : (root.currentModule
-                  ? ((root.currentModule.displayName ? (root.currentModule.displayName + " · ") : "")
-                    + usage.formatUpdatedAt(root.currentModule.updatedAt)
+                  ? (usage.formatUpdatedAt(root.currentModule.updatedAt)
                     + (root.currentModule.activeModel ? (" · " + root.currentModule.activeModel) : ""))
                   : "Enable one or more modules in Settings")
               color: root.subtleColor
@@ -1359,20 +1388,21 @@ Ui.Panel {
                 anchors.right: parent.right
                 anchors.margins: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(5)
+                spacing: Style.space(6)
 
-                Row {
+                Column {
                   width: parent.width
                   spacing: Style.space(6)
 
                   Column {
-                    width: Math.max(Style.space(120), parent.width - pStepperRow.implicitWidth - Style.space(8))
+                    width: parent.width
                     spacing: Style.space(2)
 
                     Row {
                       spacing: Style.space(6)
 
                       Text {
+                        anchors.verticalCenter: parent.verticalCenter
                         textFormat: Text.PlainText
                         text: "Daily Cost Quota"
                         color: root.fgColor
@@ -1382,15 +1412,16 @@ Ui.Panel {
                       }
 
                       Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
                         width: pqBadgeLbl.implicitWidth + Style.space(10)
                         height: Style.space(16)
                         radius: height / 2
                         color: root.usage.isOverDailyQuota
-                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.18)
+                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.20)
                           : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.14)
                         border.width: 1
                         border.color: root.usage.isOverDailyQuota
-                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.45)
+                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.55)
                           : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.35)
 
                         Text {
@@ -1399,7 +1430,7 @@ Ui.Panel {
                           textFormat: Text.PlainText
                           text: root.usage.dailyQuotaUsd <= 0
                             ? "Off"
-                            : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day")
+                            : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day" + (root.usage.isOverDailyQuota ? (" · Today " + root.usage.formatUsd(root.usage.aggregatedTotalTodayCost, true)) : ""))
                           color: root.usage.isOverDailyQuota ? root.urgentColor : root.accentColor
                           font.family: Style.font.family
                           font.pixelSize: Style.font.caption - 1
@@ -1411,7 +1442,7 @@ Ui.Panel {
                     Text {
                       width: parent.width
                       textFormat: Text.PlainText
-                      text: "Turns bar widget, today card & daily chart red when daily spend meets quota"
+                      text: "Turns status bar pill, Today card, and daily chart bars red when daily spend meets quota"
                       color: root.subtleColor
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
@@ -1421,8 +1452,7 @@ Ui.Panel {
 
                   Row {
                     id: pStepperRow
-                    spacing: Style.space(4)
-                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(6)
 
                     Repeater {
                       model: [

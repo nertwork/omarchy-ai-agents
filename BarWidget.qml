@@ -61,6 +61,7 @@ Ui.BarWidget {
     property real aggregatedTotalTodayCost: 0
     property real aggregatedTotal7dCost: 0
     property real aggregatedTotal30dCost: 0
+    property real aggregatedTotalTodayTokens: 0
     property real aggregatedTotal30dTokens: 0
     property var workVsPersonalTotals: ({ personalTodayCostUsd: 0, personal7dCostUsd: 0, personal30dCostUsd: 0, personal30dTokens: 0, censusTodayCostUsd: 0, census7dCostUsd: 0, census30dCostUsd: 0, census30dTokens: 0, workTodayCostUsd: 0, work7dCostUsd: 0, work30dCostUsd: 0, work30dTokens: 0 })
     property var meshHostsBreakdown: []
@@ -123,7 +124,7 @@ Ui.BarWidget {
   readonly property bool isOverDailyQuota: usage.isBarOverDailyQuota !== undefined
     ? !!usage.isBarOverDailyQuota
     : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
-  readonly property color urgentColor: Color.urgent ? Color.urgent : "#e06c75"
+  readonly property color urgentColor: "#ff4d4d"
 
   implicitWidth: hasVisibleAgents ? button.implicitWidth : 0
   implicitHeight: hasVisibleAgents ? button.implicitHeight : 0
@@ -197,6 +198,17 @@ Ui.BarWidget {
       }
     }
 
+    Rectangle {
+      visible: root.isOverDailyQuota && !root.vertical && root.barCostLabel !== ""
+      anchors.centerIn: parent
+      width: contentRow.implicitWidth + Style.space(12)
+      height: Math.min(parent.height - Style.space(4), Style.space(22))
+      radius: height / 2
+      color: Qt.rgba(1.0, 0.24, 0.24, 0.22)
+      border.width: 1
+      border.color: Qt.rgba(1.0, 0.30, 0.30, 0.72)
+    }
+
     Row {
       id: contentRow
       anchors.centerIn: parent
@@ -219,7 +231,7 @@ Ui.BarWidget {
         color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
-        font.weight: Font.DemiBold
+        font.weight: root.isOverDailyQuota ? Font.Bold : Font.DemiBold
       }
     }
   }

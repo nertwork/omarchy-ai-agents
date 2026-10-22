@@ -34,7 +34,7 @@
     "showAggregatedSummary": true,
     "barDisplayMode": "aggregated",
     "showBarCost": true,
-    "barCostWindow": "30d",
+    "barCostWindow": "today",
     "pollIntervalSeconds": 300,
     "terminalCommand": "",
     "providers": {
@@ -122,7 +122,7 @@
       "showAggregatedSummary": true,
       "barDisplayMode": "aggregated",
       "showBarCost": true,
-      "barCostWindow": "30d",
+      "barCostWindow": "today",
       "pollIntervalSeconds": 300,
       "terminalCommand": "",
       "enabledAgents": [

@@ -204,18 +204,19 @@ Item {
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(6)
 
-          Row {
+          Column {
             width: parent.width
             spacing: Style.space(6)
 
             Column {
-              width: Math.max(Style.space(120), parent.width - stepperRow.implicitWidth - Style.space(8))
+              width: parent.width
               spacing: Style.space(2)
 
               Row {
                 spacing: Style.space(6)
 
                 Text {
+                  anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
                   text: "Daily Cost Quota"
                   color: root.fgColor
@@ -225,15 +226,16 @@ Item {
                 }
 
                 Rectangle {
+                  anchors.verticalCenter: parent.verticalCenter
                   width: qBadgeLbl.implicitWidth + Style.space(10)
                   height: Style.space(16)
                   radius: height / 2
                   color: (root.usage && root.usage.isOverDailyQuota)
-                    ? Qt.rgba(0.88, 0.42, 0.46, 0.2)
+                    ? Qt.rgba(1.0, 0.24, 0.24, 0.20)
                     : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.14)
                   border.width: 1
                   border.color: (root.usage && root.usage.isOverDailyQuota)
-                    ? "#e06c75"
+                    ? "#ff4d4d"
                     : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.35)
 
                   Text {
@@ -242,8 +244,8 @@ Item {
                     textFormat: Text.PlainText
                     text: (!root.usage || root.usage.dailyQuotaUsd <= 0)
                       ? "Off"
-                      : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day")
-                    color: (root.usage && root.usage.isOverDailyQuota) ? "#e06c75" : root.accentColor
+                      : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day" + (root.usage && root.usage.isOverDailyQuota ? (" · Today " + root.usage.formatUsd(root.usage.aggregatedTotalTodayCost, true)) : ""))
+                    color: (root.usage && root.usage.isOverDailyQuota) ? "#ff4d4d" : root.accentColor
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption - 1
                     font.weight: Font.DemiBold
@@ -254,7 +256,7 @@ Item {
               Text {
                 width: parent.width
                 textFormat: Text.PlainText
-                text: "Highlights status bar, today KPI, and daily chart bars in red when daily spend meets or exceeds quota"
+                text: "Highlights status bar pill, Today card, and daily chart bars in red when daily spend meets quota"
                 color: root.subtleColor
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -264,8 +266,7 @@ Item {
 
             Row {
               id: stepperRow
-              spacing: Style.space(4)
-              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(6)
 
               Repeater {
                 model: [
