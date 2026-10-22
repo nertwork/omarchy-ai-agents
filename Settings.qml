@@ -190,6 +190,143 @@ Item {
         }
       }
 
+      Rectangle {
+        width: parent.width
+        implicitHeight: quotaCol.implicitHeight + Style.space(12)
+        radius: Math.max(4, Style.cornerRadius - 2)
+        color: "transparent"
+
+        Column {
+          id: quotaCol
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.margins: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Column {
+              width: Math.max(Style.space(120), parent.width - stepperRow.implicitWidth - Style.space(8))
+              spacing: Style.space(2)
+
+              Row {
+                spacing: Style.space(6)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Daily Cost Quota"
+                  color: root.fgColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                  font.weight: Font.Medium
+                }
+
+                Rectangle {
+                  width: qBadgeLbl.implicitWidth + Style.space(10)
+                  height: Style.space(16)
+                  radius: height / 2
+                  color: (root.usage && root.usage.isOverDailyQuota)
+                    ? Qt.rgba(0.88, 0.42, 0.46, 0.2)
+                    : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.14)
+                  border.width: 1
+                  border.color: (root.usage && root.usage.isOverDailyQuota)
+                    ? "#e06c75"
+                    : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.35)
+
+                  Text {
+                    id: qBadgeLbl
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: (!root.usage || root.usage.dailyQuotaUsd <= 0)
+                      ? "Off"
+                      : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day")
+                    color: (root.usage && root.usage.isOverDailyQuota) ? "#e06c75" : root.accentColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption - 1
+                    font.weight: Font.DemiBold
+                  }
+                }
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Highlights status bar, today KPI, and daily chart bars in red when daily spend meets or exceeds quota"
+                color: root.subtleColor
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+
+            Row {
+              id: stepperRow
+              spacing: Style.space(4)
+              anchors.verticalCenter: parent.verticalCenter
+
+              Repeater {
+                model: [
+                  { label: "-$5", delta: -5, preset: -1 },
+                  { label: "+$5", delta: 5, preset: -1 },
+                  { label: "$25", delta: 0, preset: 25 },
+                  { label: "$50", delta: 0, preset: 50 },
+                  { label: "$100", delta: 0, preset: 100 },
+                  { label: "$250", delta: 0, preset: 250 },
+                  { label: "Off", delta: 0, preset: 0 }
+                ]
+                delegate: Rectangle {
+                  required property var modelData
+                  readonly property real curQuota: root.usage ? Number(root.usage.dailyQuotaUsd || 0) : 50
+                  readonly property bool isSelected: modelData.preset >= 0 && Math.round(curQuota) === modelData.preset
+                  width: chipTxt.implicitWidth + Style.space(10)
+                  height: Style.space(22)
+                  radius: height / 2
+                  color: isSelected
+                    ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                    : (chipMouse.containsMouse
+                      ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
+                      : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06))
+                  border.width: 1
+                  border.color: isSelected
+                    ? root.accentColor
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.18)
+
+                  Text {
+                    id: chipTxt
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: isSelected ? root.accentColor : root.fgColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.weight: isSelected ? Font.Bold : Font.Medium
+                  }
+
+                  MouseArea {
+                    id: chipMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (!root.usage) return
+                      if (modelData.preset >= 0) {
+                        root.usage.setSetting("dailyQuotaUsd", modelData.preset)
+                      } else {
+                        var nextVal = Math.max(0, Math.round(curQuota + modelData.delta))
+                        root.usage.setSetting("dailyQuotaUsd", nextVal)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       ToggleRow {
         label: "Show aggregated totals banner"
         badgeText: "Overview"

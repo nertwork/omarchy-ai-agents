@@ -280,6 +280,7 @@ Item {
   readonly property var effectiveSettings: {
     var merged = {
       localhostOnly: false,
+      dailyQuotaUsd: 50,
       aggregateByDefault: true,
       showAggregatedSummary: true,
       barDisplayMode: "aggregated",
@@ -304,6 +305,8 @@ Item {
     function applySource(src) {
       if (!src || typeof src !== "object") return
       if (src.localhostOnly !== undefined) merged.localhostOnly = !!src.localhostOnly
+      if (src.dailyQuotaUsd !== undefined && !isNaN(Number(src.dailyQuotaUsd)))
+        merged.dailyQuotaUsd = Math.max(0, Number(src.dailyQuotaUsd))
       if (src.aggregateByDefault !== undefined) merged.aggregateByDefault = !!src.aggregateByDefault
       if (src.showAggregatedSummary !== undefined) merged.showAggregatedSummary = !!src.showAggregatedSummary
       if (src.barDisplayMode !== undefined && String(src.barDisplayMode).trim() !== "")
@@ -358,7 +361,11 @@ Item {
     return merged
   }
 
-  readonly property bool localhostOnly: !!effectiveSettings.localhostOnly
+  readonly property bool localhostOnly: effectiveSettings.localhostOnly !== undefined ? !!effectiveSettings.localhostOnly : false
+  readonly property real dailyQuotaUsd: effectiveSettings.dailyQuotaUsd !== undefined ? Math.max(0, Number(effectiveSettings.dailyQuotaUsd)) : 50
+  readonly property bool isOverDailyQuota: root.dailyQuotaUsd > 0 && root.aggregatedTotalTodayCost >= root.dailyQuotaUsd
+  readonly property bool isActiveProviderOverDailyQuota: root.dailyQuotaUsd > 0 && root.currentProvider !== null && Number(root.currentProvider.todayCostUsd || 0) >= root.dailyQuotaUsd
+  readonly property bool isBarOverDailyQuota: root.barDisplayMode === "active" ? root.isActiveProviderOverDailyQuota : root.isOverDailyQuota
   readonly property bool aggregateByDefault: !!effectiveSettings.aggregateByDefault
   readonly property bool showAggregatedSummary: !!effectiveSettings.showAggregatedSummary
   readonly property string barDisplayMode: String(effectiveSettings.barDisplayMode || "aggregated")
@@ -797,7 +804,7 @@ Item {
         wsMap[wk].costUsd = Math.round((wsMap[wk].costUsd + Number(wr.costUsd || 0)) * 100) / 100
       }
 
-      var canonicalHosts = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
+      var canonicalHosts = root.localhostOnly ? ["james-mbp1"] : ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
       for (var ch = 0; ch < canonicalHosts.length; ch++) {
         var chk = canonicalHosts[ch]
         if (!hostMap[chk]) {
@@ -818,6 +825,7 @@ Item {
         var hr = hList[h]
         if (!hr || !hr.host) continue
         var hk = String(hr.host)
+        if (root.localhostOnly && hk !== "james-mbp1") continue
         if (!hostMap[hk]) {
           hostMap[hk] = {
             host: hk,
@@ -904,7 +912,7 @@ Item {
       shortLabel: "All Modules",
       badge: enabledProviders.length + " modules",
       family: "combined",
-      profile: "multi-host",
+      profile: root.localhostOnly ? "localhost" : "multi-host",
       icon: "agy",
       enabled: true,
       ready: enabledProviders.length > 0,
@@ -1046,7 +1054,10 @@ Item {
   readonly property string barTooltipText: {
     if (root.enabledProviders.length === 0) return "AI Agents · No modules enabled"
     var scopePrefix = root.localhostOnly ? "Localhost Total" : "5-Node Total"
-    var totalLine = scopePrefix + ": Today " + root.formatUsd(root.aggregatedTotalTodayCost, false)
+    var quotaNote = root.dailyQuotaUsd > 0
+      ? (" · Quota " + root.formatUsd(root.dailyQuotaUsd, true) + "/day" + (root.isOverDailyQuota ? " [OVER QUOTA]" : ""))
+      : ""
+    var totalLine = scopePrefix + ": Today " + root.formatUsd(root.aggregatedTotalTodayCost, false) + quotaNote
       + " · 7d " + root.formatUsd(root.aggregatedTotal7dCost, false)
       + " · 30d " + root.formatUsd(root.aggregatedTotal30dCost, false)
       + "  [Work 30d: " + root.formatUsd(root.workVsPersonalTotals.work30dCostUsd, false)
@@ -1089,6 +1100,9 @@ Item {
     }
     return JSON.stringify({
       localhostOnly: root.localhostOnly,
+      dailyQuotaUsd: root.dailyQuotaUsd,
+      overDailyQuota: root.isOverDailyQuota,
+      barOverDailyQuota: root.isBarOverDailyQuota,
       showAggregatedSummary: root.showAggregatedSummary,
       barDisplayMode: root.barDisplayMode,
       barCostLabel: root.barCostLabel,

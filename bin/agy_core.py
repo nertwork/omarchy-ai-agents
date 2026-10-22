@@ -356,6 +356,15 @@ def resolve_agy_meta(settings: dict | None = None) -> dict:
     return _res_meta
 
 
+def is_localhost_only(settings: dict | None = None) -> bool:
+    if settings is None:
+        settings = load_modular_settings()
+    val = settings.get("localhostOnly")
+    if val is None:
+        return False
+    return bool(val)
+
+
 def discover_agy_config() -> tuple[list[tuple[Path, str, bool]], list[str]]:
     """Discover local AGY directories, their default GCP project, and whether they have dedicated storage."""
     settings = load_modular_settings()
@@ -393,7 +402,7 @@ def discover_agy_config() -> tuple[list[tuple[Path, str, bool]], list[str]]:
             projs.append(p_name)
 
     for d in raw_dirs:
-        if not d.exists():
+        if "migration-staging" in str(d) or not d.exists():
             continue
         sp = d / "settings.json"
         dir_proj = sb_proj if "sandbox" in d.name.lower() else pri_proj
@@ -784,6 +793,145 @@ def get_cloud_metrics(projects: list[str], force: bool = False, refresh_cloud_sy
     return _refresh_cloud_cache_sync(projects, cp)
 
 
+_ALL_MESH_HOSTS: tuple[str, ...] = ("james-mbp1", "controller", "netctl1", "gpu01", "netctl2")
+
+
+def _load_host_attribution_map(
+    local_dirs: list[tuple[Path, str, bool]],
+    extra_parent_map: dict[str, str] | None = None,
+    tr_hosts_by_cid: dict[str, set[str]] | None = None,
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, set[str]], dict[str, str]]:
+    """Build per-conversation host attribution sets from .host_manifest_<host>.json and local state."""
+    presence_by_cid: dict[str, set[str]] = defaultdict(set)
+    transcripts_by_cid: dict[str, set[str]] = defaultdict(set)
+    history_by_cid: dict[str, set[str]] = defaultdict(set)
+    combined_parent_map: dict[str, str] = dict(extra_parent_map or {})
+
+    if tr_hosts_by_cid:
+        for cid, hset in tr_hosts_by_cid.items():
+            for h in hset:
+                if h in _ALL_MESH_HOSTS:
+                    transcripts_by_cid[cid].add(h)
+
+    manifest_candidates: list[tuple[str, Path]] = []
+    conv_root = Path.home() / ".gemini/antigravity-cli/conversations"
+    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+    for h in _ALL_MESH_HOSTS:
+        manifest_candidates.append((h, conv_root / f".host_manifest_{h}.json"))
+        manifest_candidates.append((h, remote_hosts_root / h / "manifest.json"))
+
+    for h, mp in manifest_candidates:
+        if not mp.exists():
+            continue
+        try:
+            raw = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        agy_m = raw.get("agy") if isinstance(raw.get("agy"), dict) else raw
+        if not isinstance(agy_m, dict):
+            continue
+        pres = agy_m.get("presence") or agy_m.get("presence_locks") or {}
+        if isinstance(pres, dict):
+            for cid in pres.keys():
+                presence_by_cid[str(cid)].add(h)
+        elif isinstance(pres, list):
+            for cid in pres:
+                presence_by_cid[str(cid)].add(h)
+
+        trs = agy_m.get("transcripts") or agy_m.get("brain_transcripts") or {}
+        if isinstance(trs, dict):
+            for cid in trs.keys():
+                transcripts_by_cid[str(cid)].add(h)
+        elif isinstance(trs, list):
+            for cid in trs:
+                transcripts_by_cid[str(cid)].add(h)
+
+        hist = agy_m.get("history") or agy_m.get("history_cids") or []
+        if isinstance(hist, (list, dict)):
+            for cid in (hist.keys() if isinstance(hist, dict) else hist):
+                history_by_cid[str(cid)].add(h)
+
+        pmap = agy_m.get("parent_map") or {}
+        if isinstance(pmap, dict):
+            for k, v in pmap.items():
+                if k and v and str(k) not in combined_parent_map:
+                    combined_parent_map[str(k)] = str(v)
+
+    # Live local scan on james-mbp1 so active sessions prior to next sync-remote-hosts run are immediate
+    for d, _, _ in local_dirs:
+        pres_d = d / "presence"
+        if pres_d.is_dir():
+            try:
+                with os.scandir(pres_d) as it:
+                    for de in it:
+                        if de.name.endswith(".lock"):
+                            presence_by_cid[de.name[:-5]].add("james-mbp1")
+            except OSError:
+                pass
+        hist_f = d / "history.jsonl"
+        if hist_f.is_file():
+            try:
+                for ln in hist_f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if not ln.strip():
+                        continue
+                    obj = json.loads(ln)
+                    c = obj.get("conversationId") or obj.get("id")
+                    if c:
+                        history_by_cid[str(c)].add("james-mbp1")
+            except Exception:
+                pass
+
+    return presence_by_cid, transcripts_by_cid, history_by_cid, combined_parent_map
+
+
+def _resolve_agy_origin_host(
+    cid: str,
+    ws: str,
+    presence_by_cid: dict[str, set[str]],
+    transcripts_by_cid: dict[str, set[str]],
+    history_by_cid: dict[str, set[str]],
+    combined_parent_map: dict[str, str],
+) -> str:
+    """Resolve the single authoritative execution host for an AGY conversation."""
+    chain: list[str] = []
+    curr = cid
+    seen: set[str] = set()
+    while curr and curr not in seen and len(chain) < 16:
+        seen.add(curr)
+        chain.append(curr)
+        curr = combined_parent_map.get(curr, "")
+
+    for a in chain:
+        th = [h for h in _ALL_MESH_HOSTS if h in transcripts_by_cid.get(a, ())]
+        if len(th) == 1:
+            return th[0]
+        if len(th) > 1:
+            ph_on_tr = [h for h in th if any(h in presence_by_cid.get(x, ()) for x in chain)]
+            if len(ph_on_tr) >= 1:
+                return ph_on_tr[0]
+            return th[0]
+
+        ph = [h for h in _ALL_MESH_HOSTS if h in presence_by_cid.get(a, ())]
+        if len(ph) == 1:
+            return ph[0]
+        if len(ph) > 1:
+            th_on_pr = [h for h in ph if any(h in transcripts_by_cid.get(x, ()) for x in chain)]
+            if len(th_on_pr) >= 1:
+                return th_on_pr[0]
+            return ph[0]
+
+    hh = [h for h in _ALL_MESH_HOSTS if any(h in history_by_cid.get(x, ()) for x in chain)]
+    if len(hh) >= 1:
+        return hh[0]
+
+    ws_low = (ws or "").lower()
+    if any(k in ws_low for k in ("snv-rtr-ops", "clover-ai-ops", "corp-proxmox", "terraform-proxmox-vm", "network-ansible", "nit-dns-tools", "poc_quota_alerts", "librenms")) and "/work" not in ws_low:
+        return "netctl1"
+    if "controller-ai-ops" in ws_low:
+        return "controller"
+    return "james-mbp1"
+
+
 def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: bool = False) -> dict[str, dict]:
     sc_p = Path.home() / ".gemini/antigravity-cli/.sessions_cache_v3.json"
     sc: dict[str, dict] = {}
@@ -793,14 +941,14 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
         try:
             raw_sc = json.loads(sc_p.read_text(encoding="utf-8"))
             schema_v = int(raw_sc.get("__schema__", 0) or 0)
-            if schema_v in (5, 6, 7, 8):
+            if schema_v in (5, 6, 7, 8, 9, 10):
                 sc = raw_sc.get("sessions", {})
                 if schema_v < 6:
                     for _entry in sc.values():
                         _d = _entry.get("data")
                         if isinstance(_d, dict) and "events" in _d:
                             _d["events"] = _compact_session_events(_d["events"], now_ts)
-                if schema_v < 8:
+                if schema_v < 10:
                     migrated_schema = True
         except Exception:
             sc = {}
@@ -810,8 +958,16 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
     sb_p = meta["sandbox_proj"]
 
     cids: dict[str, dict] = {}
+    tr_hosts_by_cid: dict[str, set[str]] = defaultdict(set)
 
-    def _register_dir(d: Path, dir_proj: str, is_dedicated: bool, host_name: str, is_personal_dir: bool = False):
+    def _register_dir(
+        d: Path,
+        dir_proj: str,
+        is_dedicated: bool,
+        host_name: str,
+        is_personal_dir: bool = False,
+        skip_existing_db: bool = False,
+    ):
         d_str = str(d)
         for sub in (f"{d_str}/conversations", d_str):
             try:
@@ -824,11 +980,13 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                     if not name.endswith(".db") or name == "conversation_summaries.db":
                         continue
                     cid = name[:-3]
+                    entry = cids.get(cid)
+                    if skip_existing_db and entry is not None and entry["db"] is not None:
+                        continue
                     try:
                         st = de.stat()
                     except OSError:
                         continue
-                    entry = cids.get(cid)
                     if entry is None:
                         entry = {
                             "db": None,
@@ -867,6 +1025,7 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                         st = os.stat(tr_path)
                     except OSError:
                         continue
+                    tr_hosts_by_cid[cid].add(host_name)
                     entry = cids.get(cid)
                     if entry is None:
                         entry = {
@@ -890,58 +1049,59 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                         entry["tr_sz"] = st.st_size
                         entry["tr_mt"] = int(st.st_mtime)
 
+    localhost_only = is_localhost_only()
     local_host = socket.gethostname().split(".")[0] or "james-mbp1"
     for d, dir_proj, is_dedicated in dirs:
         is_pers = "personal" in d.name.lower()
-        _register_dir(d, dir_proj, is_dedicated, local_host, is_personal_dir=is_pers)
+        _register_dir(d, dir_proj, is_dedicated, local_host, is_personal_dir=is_pers, skip_existing_db=False)
 
-    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
-    if remote_hosts_root.exists():
-        for host_dir in sorted(remote_hosts_root.iterdir()):
-            if not host_dir.is_dir():
-                continue
-            hname = host_dir.name
-            agy_hdir = host_dir / "agy"
-            if agy_hdir.exists():
-                _register_dir(agy_hdir, pri_p, False, hname, is_personal_dir=False)
+    if not localhost_only:
+        remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+        if remote_hosts_root.exists():
+            for host_dir in sorted(remote_hosts_root.iterdir()):
+                if not host_dir.is_dir():
+                    continue
+                hname = host_dir.name
+                agy_hdir = host_dir / "agy"
+                if agy_hdir.exists():
+                    _register_dir(agy_hdir, pri_p, False, hname, is_personal_dir=False, skip_existing_db=True)
 
-    remote_agy_d = Path.home() / ".cache/omarchy/remote-sessions/agy"
-    if remote_agy_d.exists():
-        for f in remote_agy_d.glob("*.db"):
-            cid = f.stem
-            try:
-                st = f.stat()
-            except OSError:
-                continue
-            entry = cids.setdefault(
-                cid,
-                {
-                    "db": None,
-                    "db_sz": 0,
-                    "db_mt": 0,
-                    "tr": None,
-                    "tr_sz": 0,
-                    "tr_mt": 0,
-                    "proj": pri_p,
-                    "dedicated": False,
-                    "personal_dir": False,
-                    "hosts": {"remote"},
-                },
-            )
-            if entry["db"] is None or st.st_size > entry["db_sz"]:
-                entry.update({"db": f, "db_sz": st.st_size, "db_mt": int(st.st_mtime)})
+        remote_agy_d = Path.home() / ".cache/omarchy/remote-sessions/agy"
+        if remote_agy_d.exists():
+            for f in remote_agy_d.glob("*.db"):
+                cid = f.stem
+                if cid in cids and cids[cid]["db"] is not None:
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                entry = cids.setdefault(
+                    cid,
+                    {
+                        "db": None,
+                        "db_sz": 0,
+                        "db_mt": 0,
+                        "tr": None,
+                        "tr_sz": 0,
+                        "tr_mt": 0,
+                        "proj": pri_p,
+                        "dedicated": False,
+                        "personal_dir": False,
+                        "hosts": {"remote"},
+                    },
+                )
+                if entry["db"] is None or st.st_size > entry["db_sz"]:
+                    entry.update({"db": f, "db_sz": st.st_size, "db_mt": int(st.st_mtime)})
 
     new_sc: dict[str, dict] = {}
     dirty = False
     for cid, info in cids.items():
-        hosts_sorted = sorted(info["hosts"])
-        sig = f"{info['db_sz']}:{info['db_mt']}:{info['tr_sz']}:{info['tr_mt']}:{info['proj']}:{int(info['dedicated'])}:{int(info['personal_dir'])}:{','.join(hosts_sorted)}"
+        sig = f"{info['db_sz']}:{info['db_mt']}:{info['tr_sz']}:{info['tr_mt']}:{info['proj']}:{int(info['dedicated'])}:{int(info['personal_dir'])}"
         if cid in sc and sc[cid].get("sig") == sig:
             new_sc[cid] = sc[cid]
         else:
             parsed = _parse_session(cid, info["db"], info["tr"], info["proj"], info["dedicated"], sandbox_proj=sb_p)
-            parsed["raw_hosts"] = hosts_sorted
-            parsed["hosts"] = hosts_sorted
             parsed["personal_dir"] = bool(info["personal_dir"])
             new_sc[cid] = {
                 "sig": sig,
@@ -955,12 +1115,18 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
         if par:
             parent_map[cid] = par
 
+    presence_by_cid, transcripts_by_cid, history_by_cid, combined_parent_map = _load_host_attribution_map(
+        dirs,
+        extra_parent_map=parent_map,
+        tr_hosts_by_cid=tr_hosts_by_cid,
+    )
+
     def get_root(c: str) -> str:
         seen = set()
         curr = c
-        while curr in parent_map and parent_map[curr] not in seen:
+        while curr in combined_parent_map and combined_parent_map[curr] not in seen:
             seen.add(curr)
-            curr = parent_map[curr]
+            curr = combined_parent_map[curr]
         return curr
 
     tree_proj: dict[str, str] = {}
@@ -988,18 +1154,22 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                 d["ws"] = tree_ws[r]
                 dirty = True
 
-        # Classify session into profile_id: agy-census, agy (Corp/Work), agy-sandbox, or agy-personal
-        # Enforce strict per-host profile rules:
-        # - netctl1, netctl2: ONLY agy (Corp) and agy-sandbox (never agy-personal or agy-census)
-        # - controller, gpu01: ONLY agy-personal and agy-sandbox (never agy or agy-census)
-        # - james-mbp1: all 4 profiles (agy-personal, agy-census, agy, agy-sandbox)
-        raw_hosts_list = d.get("raw_hosts") or d.get("hosts") or ["james-mbp1"]
-        if "raw_hosts" not in d:
-            d["raw_hosts"] = list(raw_hosts_list)
-            dirty = True
         c_proj = d.get("proj") or pri_p
         c_ws = d.get("ws") or "global"
-        c_hosts = set(raw_hosts_list)
+        origin_host = _resolve_agy_origin_host(
+            cid,
+            c_ws,
+            presence_by_cid,
+            transcripts_by_cid,
+            history_by_cid,
+            combined_parent_map,
+        )
+        raw_hosts_list = [origin_host]
+        if d.get("raw_hosts") != raw_hosts_list:
+            d["raw_hosts"] = raw_hosts_list
+            dirty = True
+
+        c_hosts = {"james-mbp1"} if localhost_only else {origin_host}
         only_netctl = bool(c_hosts) and c_hosts.issubset({"netctl1", "netctl2"})
         only_homelab = bool(c_hosts) and c_hosts.issubset({"controller", "gpu01"})
         has_mbp1 = ("james-mbp1" in c_hosts) or (not c_hosts)
@@ -1023,8 +1193,8 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
                 d["proj"] = pri_p
                 dirty = True
 
-        allowed_for_prof = set(PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",)))
-        filtered_hosts = sorted(c_hosts & allowed_for_prof) or [PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",))[0]]
+        allowed_for_prof = {"james-mbp1"} if localhost_only else set(PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",)))
+        filtered_hosts = ["james-mbp1"] if localhost_only else ([origin_host] if origin_host in allowed_for_prof else [PROFILE_ALLOWED_HOSTS.get(prof_id, ("james-mbp1",))[0]])
         if d.get("hosts") != filtered_hosts:
             d["hosts"] = filtered_hosts
             dirty = True
@@ -1035,7 +1205,7 @@ def _scan_all_local_sessions(dirs: list[tuple[Path, str, bool]], rebuild_cache: 
 
     if dirty or migrated_schema or len(new_sc) != len(sc):
         try:
-            sc_p.write_text(json.dumps({"__schema__": 8, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
+            sc_p.write_text(json.dumps({"__schema__": 10, "sessions": new_sc}, separators=(",", ":")), encoding="utf-8")
         except Exception:
             pass
 
@@ -1083,7 +1253,10 @@ def _build_agy_record(
     sessions_7d: set[str] = set()
 
     meta = resolve_agy_meta()
-    if aggregated:
+    localhost_only = is_localhost_only()
+    if localhost_only:
+        allowed_hosts_tuple = ("james-mbp1",)
+    elif aggregated:
         allowed_hosts_tuple = ("james-mbp1", "controller", "gpu01", "netctl1", "netctl2")
     else:
         allowed_hosts_tuple = PROFILE_ALLOWED_HOSTS.get(
@@ -1112,9 +1285,8 @@ def _build_agy_record(
         total_tools += d.get("tools", 0)
         ws = d.get("ws") or "global"
         c_hosts = d.get("hosts") or ["james-mbp1"]
-        c_hosts_set = set(c_hosts)
-        scoped_hosts = sorted(c_hosts_set & mesh_allowed) or [allowed_hosts_tuple[0]]
-        primary_host = "james-mbp1" if "james-mbp1" in scoped_hosts else scoped_hosts[0]
+        origin_host = c_hosts[0] if c_hosts else "james-mbp1"
+        primary_host = origin_host if origin_host in mesh_allowed else allowed_hosts_tuple[0]
 
         c_tok = 0
         c_cost = 0.0
@@ -1122,7 +1294,7 @@ def _build_agy_record(
         c_in_30d = False
 
         ws_entry = ws_stats[ws]
-        host_entries = [host_stats[h] for h in scoped_hosts]
+        host_entries = [host_stats[primary_host]]
         c_in_7d = False
 
         for ev in d.get("events", []):
@@ -1364,11 +1536,15 @@ def _build_agy_record(
             "status": "local" if k == "james-mbp1" else "synced",
             "lastSyncAt": now.astimezone(timezone.utc).isoformat() if k == "james-mbp1" else last_sync_iso,
             "tokens30d": v["tokens30d"],
+            "tokens": v["tokens30d"],
             "costUsd30d": round(v["costUsd30d"], 2),
+            "costUsd": round(v["costUsd30d"], 2),
             "costUsd7d": round(v["costUsd7d"], 2),
             "costUsdToday": round(v["costUsdToday"], 2),
             "prompts30d": v["prompts30d"],
+            "prompts": v["prompts30d"],
             "sessions30d": len(v["sessions30d"]),
+            "sessions": len(v["sessions30d"]),
         }
         for k, v in sorted(host_stats.items(), key=lambda x: (_host_order.get(x[0], 99), -x[1]["costUsd30d"]))
     ]
@@ -1429,8 +1605,8 @@ def _build_agy_record(
         "shortLabel": short_label,
         "displayName": display_name,
         "badge": badge,
-        "executionScope": "multi-host",
-        "localhostOnly": False,
+        "executionScope": "localhost" if localhost_only else "multi-host",
+        "localhostOnly": localhost_only,
         "aggregated": aggregated,
         "status": "online",
         "scope": "account",
@@ -1718,9 +1894,11 @@ def collect_agy_profiles(force: bool = False, split_profiles: bool | None = None
     cens_cost_7d = round(prof_stats["agy-census"]["cost7d"], 2)
     cens_cost_today = round(prof_stats["agy-census"]["costToday"], 2)
 
+    localhost_only = is_localhost_only()
     family_summary = {
         "family": "agy",
-        "executionScope": "multi-host",
+        "executionScope": "localhost" if localhost_only else "multi-host",
+        "localhostOnly": localhost_only,
         "splitProfiles": bool(split_profiles),
         "tokens30d": sum(pb["localTokens30d"] for pb in all_proj_breakdown),
         "tokens7d": sum(pb["localTokens7d"] for pb in all_proj_breakdown),

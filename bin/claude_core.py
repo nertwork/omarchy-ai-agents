@@ -143,6 +143,56 @@ def resolve_claude_meta(settings: dict | None = None) -> dict:
     }
 
 
+CLAUDE_PROFILE_ALLOWED_HOSTS: dict[str, tuple[str, ...]] = {
+    "claude": ("james-mbp1", "controller", "gpu01"),
+    "fiserv-claude": ("james-mbp1", "netctl1", "netctl2"),
+}
+_ALL_CLAUDE_HOSTS: tuple[str, ...] = ("james-mbp1", "controller", "gpu01", "netctl1", "netctl2")
+
+
+def is_localhost_only(settings: dict | None = None) -> bool:
+    if settings is None:
+        settings = load_modular_settings()
+    val = settings.get("localhostOnly")
+    if val is None:
+        return False
+    return bool(val)
+
+
+def _load_claude_host_manifest_map() -> dict[str, str]:
+    """Load session-id -> origin_host mapping from .host_manifest_<host>.json."""
+    sid_hosts: dict[str, list[str]] = defaultdict(list)
+    conv_root = Path.home() / ".gemini/antigravity-cli/conversations"
+    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+    for h in _ALL_CLAUDE_HOSTS:
+        for mp in (conv_root / f".host_manifest_{h}.json", remote_hosts_root / h / "manifest.json"):
+            if not mp.exists():
+                continue
+            try:
+                raw = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            cm = raw.get("claude") if isinstance(raw.get("claude"), dict) else {}
+            sess_map = cm.get("sessions") or raw.get("claude_sessions") or {}
+            if isinstance(sess_map, dict):
+                for sid in sess_map.keys():
+                    if h not in sid_hosts[str(sid)]:
+                        sid_hosts[str(sid)].append(h)
+            elif isinstance(sess_map, list):
+                for sid in sess_map:
+                    if h not in sid_hosts[str(sid)]:
+                        sid_hosts[str(sid)].append(h)
+
+    out: dict[str, str] = {}
+    for sid, hlist in sid_hosts.items():
+        if len(hlist) == 1:
+            out[sid] = hlist[0]
+        else:
+            non_local = [h for h in hlist if h != "james-mbp1"]
+            out[sid] = non_local[0] if len(non_local) == 1 else hlist[0]
+    return out
+
+
 def discover_claude_dirs(meta: dict | None = None) -> list[tuple[str, Path]]:
     settings = load_modular_settings()
     if meta is None:
@@ -166,24 +216,27 @@ def discover_claude_dirs(meta: dict | None = None) -> list[tuple[str, Path]]:
             is_work = (work_dir_stem and work_dir_stem in p.name.lower()) or ("work" in p.name.lower())
             raw.append(("fiserv-claude" if is_work else "claude", p))
 
-    remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
-    if remote_hosts_root.exists():
-        for host_dir in sorted(remote_hosts_root.iterdir()):
-            if not host_dir.is_dir():
-                continue
-            hname = host_dir.name
-            is_work_host = hname in ("netctl1", "netctl2")
-            c_root = host_dir / "claude"
-            if c_root.exists():
-                for sub in sorted(c_root.iterdir()):
-                    if sub.is_dir():
-                        lbl = "fiserv-claude" if (is_work_host or "work" in sub.name.lower()) else "claude"
-                        raw.append((lbl, sub))
+    if not is_localhost_only(settings):
+        remote_hosts_root = Path.home() / ".cache/omarchy/remote-sessions/hosts"
+        if remote_hosts_root.exists():
+            for host_dir in sorted(remote_hosts_root.iterdir()):
+                if not host_dir.is_dir():
+                    continue
+                for cname, clbl in (("claude", "claude"), ("claude-work", "fiserv-claude"), ("claude-fiserv", "fiserv-claude")):
+                    c_dir = host_dir / cname
+                    if (c_dir / "projects").exists():
+                        raw.append((clbl, c_dir))
+                c_root = host_dir / "claude"
+                if c_root.exists():
+                    for sub in sorted(c_root.iterdir()):
+                        if sub.is_dir() and (sub / "projects").exists():
+                            lbl = "fiserv-claude" if ("work" in sub.name.lower() or "fiserv" in sub.name.lower()) else "claude"
+                            raw.append((lbl, sub))
 
     seen: set[str] = set()
     out: list[tuple[str, Path]] = []
     for lbl, p in raw:
-        if not p.exists():
+        if "migration-staging" in str(p) or not p.exists():
             continue
         rp = str(p.resolve())
         if rp not in seen:
@@ -196,9 +249,17 @@ def _classify_project_dir(base_label: str, proj_dir_name: str, work_patterns: li
     if base_label == "fiserv-claude":
         return "fiserv-claude"
     lower_name = proj_dir_name.lower()
+    if lower_name.startswith("remote-") and "--" in lower_name:
+        lower_name = lower_name.split("--", 1)[1]
+    sanitized = lower_name.replace("nertwork", "homelab")
     for pat in work_patterns:
-        if fnmatch.fnmatch(lower_name, pat.lower()):
+        pat_l = pat.lower()
+        if "netctl" in pat_l:
+            continue
+        if fnmatch.fnmatch(sanitized, pat_l):
             return "fiserv-claude"
+    if any(tok in sanitized for tok in ("-work", "clover", "fiserv", "snv-rtr-ops", "corp-proxmox", "network-ansible", "nit-dns-tools", "poc_quota_alerts")):
+        return "fiserv-claude"
     return "claude"
 
 
@@ -365,17 +426,36 @@ def _parse_claude_jsonl(jf: Path, base_label: str, work_patterns: list[str] | tu
     }
 
 
+def _resolve_claude_session_host(sid: str, f_key: str, ws_name: str, prof: str, manifest_host_map: dict[str, str]) -> str:
+    if sid in manifest_host_map:
+        return manifest_host_map[sid]
+    if ":" in ws_name:
+        prefix = ws_name.split(":", 1)[0]
+        if prefix in _ALL_CLAUDE_HOSTS:
+            return prefix
+    if ws_name in _ALL_CLAUDE_HOSTS:
+        return ws_name
+    parts = f_key.split("/")
+    if "hosts" in parts:
+        idx = parts.index("hosts")
+        if idx + 1 < len(parts) and parts[idx + 1] in _ALL_CLAUDE_HOSTS:
+            return parts[idx + 1]
+    return "james-mbp1"
+
+
 def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> list[dict]:
     if meta is None:
         meta = resolve_claude_meta()
     work_patterns = meta.get("work_patterns") or ()
+    manifest_host_map = _load_claude_host_manifest_map()
+    localhost_only = is_localhost_only()
     cache_p = Path.home() / ".cache/omarchy/claude-scan-cache.json"
     cache_p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     cache = {}
     if cache_p.exists():
         try:
             raw = json.loads(cache_p.read_text(encoding="utf-8"))
-            if raw.get("__schema__") == 5:
+            if raw.get("__schema__") == 7:
                 cache = raw.get("files", {})
         except Exception:
             cache = {}
@@ -411,12 +491,25 @@ def _scan_all_claude_sessions(force: bool = False, meta: dict | None = None) -> 
             else:
                 entry = {"sig": sig, "data": _parse_claude_jsonl(Path(f_key), base_label, work_patterns)}
                 dirty = True
+            sdata = entry["data"]
+            raw_host = _resolve_claude_session_host(
+                sid,
+                f_key,
+                sdata.get("ws", ""),
+                sdata.get("prof", "claude"),
+                manifest_host_map,
+            )
+            allowed = CLAUDE_PROFILE_ALLOWED_HOSTS.get(sdata.get("prof", "claude"), ("james-mbp1",))
+            eff_host = "james-mbp1" if localhost_only else (raw_host if raw_host in allowed else allowed[0])
+            if sdata.get("host") != eff_host:
+                sdata["host"] = eff_host
+                dirty = True
             new_cache[f_key] = entry
-            sessions.append(entry["data"])
+            sessions.append(sdata)
 
     if dirty or len(new_cache) != len(cache):
         try:
-            cache_p.write_text(json.dumps({"__schema__": 5, "files": new_cache}), encoding="utf-8")
+            cache_p.write_text(json.dumps({"__schema__": 7, "files": new_cache}), encoding="utf-8")
             cache_p.chmod(0o600)
         except Exception:
             pass
@@ -483,6 +576,30 @@ def _build_claude_record(
     mod_stats_all: dict[str, list] = defaultdict(lambda: [0, 0, 0, 0, 0.0])
     ws_stats: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "prompts": 0, "sessions": set(), "last": ""})
     ws_stats_all: dict[str, dict] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "prompts": 0, "sessions": set(), "last": ""})
+    localhost_only = is_localhost_only()
+    if localhost_only:
+        allowed_hosts = ("james-mbp1",)
+    elif aggregated or target_prof is None:
+        allowed_hosts = _ALL_CLAUDE_HOSTS
+    else:
+        allowed_hosts = CLAUDE_PROFILE_ALLOWED_HOSTS.get(record_id, ("james-mbp1",))
+    host_stats: dict[str, dict] = {
+        h: {
+            "tokens30d": 0,
+            "tokens7d": 0,
+            "tokensToday": 0,
+            "cost30d": 0.0,
+            "cost7d": 0.0,
+            "costToday": 0.0,
+            "prompts30d": 0,
+            "prompts7d": 0,
+            "promptsToday": 0,
+            "sessions30d": set(),
+            "sessions7d": set(),
+            "sessionsToday": set(),
+        }
+        for h in allowed_hosts
+    }
 
     sessions_30d: set[str] = set()
     sessions_7d: set[str] = set()
@@ -532,8 +649,25 @@ def _build_claude_record(
 
             if day_str >= cut_30d:
                 sessions_30d.add(sid)
+                shost = "james-mbp1" if localhost_only else (s.get("host") or "james-mbp1")
+                if shost not in host_stats:
+                    shost = allowed_hosts[0]
+                hs = host_stats[shost]
+                hs["tokens30d"] += s_tok
+                hs["cost30d"] += s_cost
+                hs["prompts30d"] += s_p
+                hs["sessions30d"].add(sid)
                 if day_str >= cut_7d:
                     sessions_7d.add(sid)
+                    hs["tokens7d"] += s_tok
+                    hs["cost7d"] += s_cost
+                    hs["prompts7d"] += s_p
+                    hs["sessions7d"].add(sid)
+                if day_str == today_s:
+                    hs["tokensToday"] += s_tok
+                    hs["costToday"] += s_cost
+                    hs["promptsToday"] += s_p
+                    hs["sessionsToday"].add(sid)
                 if s_tok > 0:
                     mod_stats_30d[s_mod][0] += s_it
                     mod_stats_30d[s_mod][1] += s_ot
@@ -684,8 +818,8 @@ def _build_claude_record(
         "shortLabel": short_label,
         "displayName": display_name,
         "badge": badge,
-        "executionScope": "multi-host",
-        "localhostOnly": False,
+        "executionScope": "localhost" if is_localhost_only() else "multi-host",
+        "localhostOnly": is_localhost_only(),
         "aggregated": aggregated,
         "status": "online",
         "scope": "account",
@@ -734,6 +868,34 @@ def _build_claude_record(
         "aggregation": family_summary,
         "groupTotals": family_summary,
         "workspaceUsage": ws_list,
+        "hostsBreakdown": [
+            {
+                "host": h,
+                "role": "local" if h == "james-mbp1" else "remote",
+                "status": "local" if h == "james-mbp1" else "synced",
+                "lastSyncAt": now_iso,
+                "tokens30d": hv["tokens30d"],
+                "tokens": hv["tokens30d"],
+                "tokens7d": hv["tokens7d"],
+                "tokensToday": hv["tokensToday"],
+                "costUsd30d": round(hv["cost30d"], 2),
+                "costUsd": round(hv["cost30d"], 2),
+                "costUsd7d": round(hv["cost7d"], 2),
+                "costUsdToday": round(hv["costToday"], 2),
+                "prompts30d": hv["prompts30d"],
+                "prompts": hv["prompts30d"],
+                "prompts7d": hv["prompts7d"],
+                "promptsToday": hv["promptsToday"],
+                "sessions30d": len(hv["sessions30d"]),
+                "sessions": len(hv["sessions30d"]),
+                "sessions7d": len(hv["sessions7d"]),
+                "sessionsToday": len(hv["sessionsToday"]),
+            }
+            for h, hv in sorted(
+                host_stats.items(),
+                key=lambda item: (0 if item[0] == "james-mbp1" else 1, -item[1]["cost30d"], allowed_hosts.index(item[0]) if item[0] in allowed_hosts else 99),
+            )
+        ],
     }
 
 
@@ -853,9 +1015,11 @@ def collect_claude_profiles(force: bool = False, split_profiles: bool | None = N
             }
         )
 
+    localhost_only = is_localhost_only(settings)
     family_summary = {
         "family": "claude",
-        "executionScope": "multi-host",
+        "executionScope": "localhost" if localhost_only else "multi-host",
+        "localhostOnly": localhost_only,
         "splitProfiles": bool(split_profiles),
         "tokens30d": sum(pb["tokens30d"] for pb in all_prof_breakdown),
         "tokens7d": sum(pb["tokens7d"] for pb in all_prof_breakdown),

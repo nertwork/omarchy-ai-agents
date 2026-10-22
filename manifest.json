@@ -112,7 +112,8 @@
       "agy-sandbox",
       "claude",
       "fiserv-claude"
-    ]
+    ],
+    "dailyQuotaUsd": 50
   },
   "barWidget": {
     "defaults": {
@@ -199,7 +200,8 @@
           "profile": "census",
           "label": "AGY Census"
         }
-      }
+      },
+      "dailyQuotaUsd": 50
     },
     "settingsSchema": [
       {
@@ -261,6 +263,15 @@
         "type": "string",
         "default": "",
         "placeholder": "e.g. ghostty -e or alacritty -e"
+      },
+      {
+        "key": "dailyQuotaUsd",
+        "label": "Daily Cost Quota ($ USD)",
+        "type": "number",
+        "default": 50,
+        "min": 0,
+        "max": 1000,
+        "step": 5
       }
     ],
     "defaultSection": "right",

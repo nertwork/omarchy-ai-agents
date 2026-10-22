@@ -62,7 +62,7 @@ Ui.Panel {
     property string barCostLabel: ""
     property string barTooltipText: "AI Agents Usage & Quota"
     property string terminalCommand: "xdg-terminal-exec"
-    property bool localhostOnly: false
+    property bool localhostOnly: true
     property bool isRefreshing: false
     property bool refreshing: false
     property real aggregatedTotalTodayCost: 0
@@ -121,6 +121,7 @@ Ui.Panel {
         for (var j = 0; j < pList.length; j++) {
           var ph = pList[j]
           if (ph && ph.host) {
+            if (usage && usage.localhostOnly && String(ph.host) !== "james-mbp1") continue
             pOut.push({
               host: String(ph.host),
               role: String(ph.role || (ph.host === "james-mbp1" ? "local" : "mesh-sync")),
@@ -135,14 +136,16 @@ Ui.Panel {
       }
       var pid = String(root.activeProvider.id || "")
       var fallbackOrder = ["james-mbp1"]
-      if (pid === "agy-personal" || pid === "claude") {
-        fallbackOrder = ["james-mbp1", "controller", "gpu01"]
-      } else if (pid === "agy" || pid === "fiserv-claude") {
-        fallbackOrder = ["james-mbp1", "netctl1", "netctl2"]
-      } else if (pid === "agy-sandbox") {
-        fallbackOrder = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
-      } else if (pid === "agy-census") {
-        fallbackOrder = ["james-mbp1"]
+      if (!(usage && usage.localhostOnly)) {
+        if (pid === "agy-personal" || pid === "claude") {
+          fallbackOrder = ["james-mbp1", "controller", "gpu01"]
+        } else if (pid === "agy" || pid === "fiserv-claude") {
+          fallbackOrder = ["james-mbp1", "netctl1", "netctl2"]
+        } else if (pid === "agy-sandbox") {
+          fallbackOrder = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
+        } else if (pid === "agy-census") {
+          fallbackOrder = ["james-mbp1"]
+        }
       }
       var fOut = []
       for (var f = 0; f < fallbackOrder.length; f++) {
@@ -173,7 +176,7 @@ Ui.Panel {
         }
       }
     }
-    var order = ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
+    var order = (usage && usage.localhostOnly) ? ["james-mbp1"] : ["james-mbp1", "controller", "gpu01", "netctl1", "netctl2"]
     var out = []
     for (var k = 0; k < order.length; k++) {
       var hName = order[k]
@@ -432,16 +435,21 @@ Ui.Panel {
     property string tokenPillText: "0 tok"
     property string subtext: ""
     property bool highlight: false
+    property bool urgent: false
 
     implicitHeight: Style.space(86)
     radius: Style.cornerRadius
-    color: highlight
-      ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
-      : root.cardFill
+    color: urgent
+      ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.14)
+      : (highlight
+        ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08)
+        : root.cardFill)
     border.width: 1
-    border.color: highlight
-      ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.32)
-      : root.cardBorder
+    border.color: urgent
+      ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.55)
+      : (highlight
+        ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.32)
+        : root.cardBorder)
 
     Column {
       anchors.fill: parent
@@ -452,7 +460,7 @@ Ui.Panel {
         width: parent.width
         textFormat: Text.PlainText
         text: kpiRoot.label
-        color: kpiRoot.highlight ? root.accentColor : root.subtleColor
+        color: kpiRoot.urgent ? root.urgentColor : (kpiRoot.highlight ? root.accentColor : root.subtleColor)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         font.weight: Font.Bold
@@ -465,7 +473,7 @@ Ui.Panel {
         width: parent.width
         textFormat: Text.PlainText
         text: kpiRoot.primaryValue
-        color: root.fgColor
+        color: kpiRoot.urgent ? root.urgentColor : root.fgColor
         font.family: Style.font.family
         font.pixelSize: Style.font.heading
         font.weight: Font.Bold
@@ -579,13 +587,18 @@ Ui.Panel {
       // =======================================================================
       Rectangle {
         id: aggregateBanner
+        readonly property bool overQuota: usage.isOverDailyQuota === true
         visible: !root.showSettings && usage.showAggregatedSummary && usage.enabledProviders.length > 1
         width: parent.width
         implicitHeight: bannerCol.implicitHeight + Style.space(18)
         radius: Style.cornerRadius
-        color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.075)
+        color: overQuota
+          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.12)
+          : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.075)
         border.width: 1
-        border.color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.28)
+        border.color: overQuota
+          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.50)
+          : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.28)
 
         Column {
           id: bannerCol
@@ -608,7 +621,7 @@ Ui.Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
                   text: usage.localhostOnly ? "LOCALHOST AI SPEND" : "MULTI-HOST AI SPEND · 5 NODES"
-                  color: root.accentColor
+                  color: aggregateBanner.overQuota ? root.urgentColor : root.accentColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   font.weight: Font.Bold
@@ -621,6 +634,21 @@ Ui.Panel {
                   textColor: root.fgColor
                   pillFill: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.08)
                 }
+
+                BadgePill {
+                  visible: Number(usage.dailyQuotaUsd || 0) > 0
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: aggregateBanner.overQuota
+                    ? ("OVER " + usage.formatUsd(usage.dailyQuotaUsd, true) + " QUOTA")
+                    : ("Quota " + usage.formatUsd(usage.dailyQuotaUsd, true) + "/d")
+                  textColor: aggregateBanner.overQuota ? root.urgentColor : root.mutedColor
+                  pillFill: aggregateBanner.overQuota
+                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.18)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06)
+                  pillBorder: aggregateBanner.overQuota
+                    ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.45)
+                    : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
+                }
               }
 
               Text {
@@ -629,7 +657,7 @@ Ui.Panel {
                 text: "Today " + usage.formatUsd(usage.aggregatedTotalTodayCost, false)
                   + "   ·   7d " + usage.formatUsd(usage.aggregatedTotal7dCost, false)
                   + "   ·   30d " + usage.formatUsd(usage.aggregatedTotal30dCost, false)
-                color: root.fgColor
+                color: aggregateBanner.overQuota ? root.urgentColor : root.fgColor
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.weight: Font.Bold
@@ -1304,6 +1332,142 @@ Ui.Panel {
               onToggled: function(val) { root.usage.setSetting("localhostOnly", val) }
             }
 
+            Rectangle {
+              width: parent.width
+              implicitHeight: pQuotaCol.implicitHeight + Style.space(12)
+              radius: Math.max(4, Style.cornerRadius - 2)
+              color: "transparent"
+
+              Column {
+                id: pQuotaCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(5)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  Column {
+                    width: Math.max(Style.space(120), parent.width - pStepperRow.implicitWidth - Style.space(8))
+                    spacing: Style.space(2)
+
+                    Row {
+                      spacing: Style.space(6)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: "Daily Cost Quota"
+                        color: root.fgColor
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        font.weight: Font.Medium
+                      }
+
+                      Rectangle {
+                        width: pqBadgeLbl.implicitWidth + Style.space(10)
+                        height: Style.space(16)
+                        radius: height / 2
+                        color: root.usage.isOverDailyQuota
+                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.18)
+                          : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.14)
+                        border.width: 1
+                        border.color: root.usage.isOverDailyQuota
+                          ? Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.45)
+                          : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.35)
+
+                        Text {
+                          id: pqBadgeLbl
+                          anchors.centerIn: parent
+                          textFormat: Text.PlainText
+                          text: root.usage.dailyQuotaUsd <= 0
+                            ? "Off"
+                            : ("$" + Math.round(root.usage.dailyQuotaUsd) + "/day")
+                          color: root.usage.isOverDailyQuota ? root.urgentColor : root.accentColor
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption - 1
+                          font.weight: Font.DemiBold
+                        }
+                      }
+                    }
+
+                    Text {
+                      width: parent.width
+                      textFormat: Text.PlainText
+                      text: "Turns bar widget, today card & daily chart red when daily spend meets quota"
+                      color: root.subtleColor
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+                  }
+
+                  Row {
+                    id: pStepperRow
+                    spacing: Style.space(4)
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Repeater {
+                      model: [
+                        { label: "-$5", delta: -5, preset: -1 },
+                        { label: "+$5", delta: 5, preset: -1 },
+                        { label: "$25", delta: 0, preset: 25 },
+                        { label: "$50", delta: 0, preset: 50 },
+                        { label: "$100", delta: 0, preset: 100 },
+                        { label: "$250", delta: 0, preset: 250 },
+                        { label: "Off", delta: 0, preset: 0 }
+                      ]
+                      delegate: Rectangle {
+                        required property var modelData
+                        readonly property real curQuota: Number(root.usage.dailyQuotaUsd || 0)
+                        readonly property bool isSelected: modelData.preset >= 0 && Math.round(curQuota) === modelData.preset
+                        width: pChipTxt.implicitWidth + Style.space(10)
+                        height: Style.space(22)
+                        radius: height / 2
+                        color: isSelected
+                          ? Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                          : (pChipMouse.containsMouse
+                            ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
+                            : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.06))
+                        border.width: 1
+                        border.color: isSelected
+                          ? root.accentColor
+                          : Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.18)
+
+                        Text {
+                          id: pChipTxt
+                          anchors.centerIn: parent
+                          textFormat: Text.PlainText
+                          text: modelData.label
+                          color: isSelected ? root.accentColor : root.fgColor
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          font.weight: isSelected ? Font.Bold : Font.Medium
+                        }
+
+                        MouseArea {
+                          id: pChipMouse
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: {
+                            if (modelData.preset >= 0) {
+                              root.usage.setSetting("dailyQuotaUsd", modelData.preset)
+                            } else {
+                              var nextVal = Math.max(0, Math.round(curQuota + modelData.delta))
+                              root.usage.setSetting("dailyQuotaUsd", nextVal)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
             SettingsToggleRow {
               label: "Show aggregated totals banner"
               badgeText: "Overview"
@@ -1419,6 +1583,7 @@ Ui.Panel {
                 ? (root.activeProvider.todayPrompts + " req")
                 : ""
               highlight: root.activeProvider ? (root.activeProvider.todayCostUsd > 0 || root.activeProvider.todayTotalTokens > 0) : false
+              urgent: Number(usage.dailyQuotaUsd || 0) > 0 && root.activeProvider !== null && Number(root.activeProvider.todayCostUsd || 0) >= Number(usage.dailyQuotaUsd || 50)
             }
 
             KpiCard {
@@ -1536,6 +1701,7 @@ Ui.Panel {
                     readonly property double dayTokens: Number(modelData.tokens !== undefined ? modelData.tokens : (modelData.messageCount || 0))
                     readonly property string dayShort: usage.formatShortDay(modelData.date)
                     readonly property bool isToday: dayShort === "Today" || index === (chartCard.daysData.length - 1)
+                    readonly property bool isOverQuota: Number(usage.dailyQuotaUsd || 0) > 0 && dayCost >= Number(usage.dailyQuotaUsd || 50)
                     readonly property real fillRatio: {
                       if (chartCard.maxDailyCost > 0 && dayCost > 0) {
                         return Math.max(0.08, Math.min(1.0, dayCost / chartCard.maxDailyCost))
@@ -1559,10 +1725,10 @@ Ui.Panel {
                       text: dayCol.dayCost > 0
                         ? usage.formatUsd(dayCol.dayCost, dayCol.dayCost >= 100)
                         : (dayCol.dayTokens > 0 ? usage.formatCompactNumber(dayCol.dayTokens) : "—")
-                      color: dayCol.isToday ? root.fgColor : root.mutedColor
+                      color: dayCol.isOverQuota ? root.urgentColor : (dayCol.isToday ? root.fgColor : root.mutedColor)
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
-                      font.weight: dayCol.isToday ? Font.Bold : Font.Normal
+                      font.weight: (dayCol.isToday || dayCol.isOverQuota) ? Font.Bold : Font.Normal
                       elide: Text.ElideRight
                     }
 
@@ -1585,9 +1751,11 @@ Ui.Panel {
                         radius: parent.radius
                         color: (dayCol.dayCost <= 0 && dayCol.dayTokens <= 0)
                           ? Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.14)
-                          : (dayCol.isToday || barHover.containsMouse
-                            ? root.accentColor
-                            : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.62))
+                          : (dayCol.isOverQuota
+                            ? root.urgentColor
+                            : (dayCol.isToday || barHover.containsMouse
+                              ? root.accentColor
+                              : Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.62)))
 
                         Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
                         Behavior on color { ColorAnimation { duration: 100 } }
@@ -1606,7 +1774,7 @@ Ui.Panel {
                         horizontalAlignment: Text.AlignHCenter
                         textFormat: Text.PlainText
                         text: dayCol.dayShort
-                        color: dayCol.isToday ? root.accentColor : root.fgColor
+                        color: dayCol.isOverQuota ? root.urgentColor : (dayCol.isToday ? root.accentColor : root.fgColor)
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
                         font.weight: dayCol.isToday ? Font.Bold : Font.Medium

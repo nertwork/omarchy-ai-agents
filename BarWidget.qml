@@ -52,6 +52,10 @@ Ui.BarWidget {
     property string barTooltipText: "AI Agents Usage & Quota"
     property string terminalCommand: "xdg-terminal-exec"
     property bool localhostOnly: false
+    property real dailyQuotaUsd: 50
+    property bool isOverDailyQuota: false
+    property bool isActiveProviderOverDailyQuota: false
+    property bool isBarOverDailyQuota: false
     property bool isRefreshing: false
     property bool refreshing: false
     property real aggregatedTotalTodayCost: 0
@@ -116,6 +120,10 @@ Ui.BarWidget {
   }
 
   readonly property string barTooltip: usage.barTooltipText
+  readonly property bool isOverDailyQuota: usage.isBarOverDailyQuota !== undefined
+    ? !!usage.isBarOverDailyQuota
+    : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
+  readonly property color urgentColor: Color.urgent ? Color.urgent : "#e06c75"
 
   implicitWidth: hasVisibleAgents ? button.implicitWidth : 0
   implicitHeight: hasVisibleAgents ? button.implicitHeight : 0
@@ -198,7 +206,7 @@ Ui.BarWidget {
         textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: "󱚣"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
         font.family: Style.font.family
         font.pixelSize: Style.bar.iconFont
       }
@@ -208,7 +216,7 @@ Ui.BarWidget {
         textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: root.barCostLabel
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         font.weight: Font.DemiBold

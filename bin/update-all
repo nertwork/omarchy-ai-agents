@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
-# Collect local + remote usage for all AI assistant profiles.
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONDONTWRITEBYTECODE=1
 
-if [[ -x "$SCRIPT_DIR/sync-remote-hosts" ]]; then
-  if [[ " $* " == *" --force "* ]]; then
-    timeout 15 "$SCRIPT_DIR/sync-remote-hosts" >/dev/null 2>&1 || true
-  else
-    (
-      if "$SCRIPT_DIR/sync-remote-hosts" >/dev/null 2>&1; then
-        python3 -B "$SCRIPT_DIR/collector.py" >/dev/null 2>&1 || true
-      fi
-    ) &
+SYNC_HOSTS=0
+for arg in "$@"; do
+  [[ "$arg" == "--sync-hosts" ]] && SYNC_HOSTS=1
+done
+
+if [[ "$SYNC_HOSTS" -eq 1 && -x "$SCRIPT_DIR/sync-remote-hosts" ]]; then
+  LOCALHOST_ONLY="$(python3 -c '
+import json, pathlib
+for p in [
+    pathlib.Path.home() / ".local/state/omarchy/settings/nertwork.agents.json",
+    pathlib.Path.home() / ".config/omarchy/agents/profiles.json",
+]:
+    if p.exists():
+        try:
+            d = json.loads(p.read_text())
+            if "localhostOnly" in d:
+                print("1" if d["localhostOnly"] else "0")
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+print("0")
+' 2>/dev/null || echo "0")"
+  if [[ "$LOCALHOST_ONLY" == "0" ]]; then
+    "$SCRIPT_DIR/sync-remote-hosts" --force >/dev/null 2>&1 || true
   fi
 fi
 
-exec python3 -B "$SCRIPT_DIR/collector.py" "$@"
+exec python3 "$SCRIPT_DIR/collector.py" "$@"

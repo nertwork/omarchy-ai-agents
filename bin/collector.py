@@ -213,11 +213,22 @@ def _build_grand_summary(agy_sum: dict, claude_sum: dict, agy_split: bool, claud
     cens_7d = round(float(agy_sum.get("censusCostUsd7d", 0.0)), 2)
     cens_today = round(float(agy_sum.get("censusCostUsdToday", 0.0)), 2)
 
+    settings_dict = load_settings()
+    localhost_only = bool(settings_dict.get("localhostOnly", False))
+    try:
+        daily_quota_usd = float(settings_dict.get("dailyQuotaUsd", 50.0))
+    except (TypeError, ValueError):
+        daily_quota_usd = 50.0
+    over_daily_quota = bool(daily_quota_usd > 0 and grand_total["todayCostUsd"] >= daily_quota_usd)
+    grand_total["dailyQuotaUsd"] = daily_quota_usd
+    grand_total["overDailyQuota"] = over_daily_quota
     return {
         "schemaVersion": 2,
         "updatedAt": now_iso,
-        "executionScope": "multi-host",
-        "localhostOnly": False,
+        "executionScope": "localhost" if localhost_only else "multi-host",
+        "localhostOnly": localhost_only,
+        "dailyQuotaUsd": daily_quota_usd,
+        "overDailyQuota": over_daily_quota,
         "splitProfiles": bool(agy_split or claude_split),
         "agySplitProfiles": bool(agy_split),
         "claudeSplitProfiles": bool(claude_split),
@@ -440,11 +451,10 @@ def collect_codex(force: bool = False):
 
     # Scan local + synced remote .codex/sessions/*.jsonl for full all-time token & cost telemetry
     codex_files = {}
-    for root in (
-        Path.home() / ".codex/sessions",
-        Path.home() / ".cache/omarchy/remote-sessions/codex",
-        Path.home() / "migration-staging/.codex/sessions",
-    ):
+    codex_roots = [Path.home() / ".codex/sessions"]
+    if not bool(load_settings().get("localhostOnly", True)):
+        codex_roots.append(Path.home() / ".cache/omarchy/remote-sessions/codex")
+    for root in codex_roots:
         if root.is_dir():
             for jf in root.rglob("*.jsonl"):
                 codex_files.setdefault(jf.name, jf)

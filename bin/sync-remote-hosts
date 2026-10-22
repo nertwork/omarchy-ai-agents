@@ -1,39 +1,108 @@
-#!/usr/bin/env bash
-# Fast background incremental sync of AI agent sessions from controller, gpu01, netctl1, netctl2
-set -u
+#!/bin/bash
+# Sync remote host AI session manifests & non-Mutagen Claude sessions into local cache
+# Usage: sync-remote-hosts [--force] [host]
+# Called on expand, periodic timer, or manual refresh.
+# Has a 30s cooldown per host unless --force is passed.
 
-CACHE_ROOT="${HOME}/.cache/omarchy/remote-sessions/hosts"
-STAMP_FILE="${CACHE_ROOT}/.last_sync"
-LOCK_FILE="${CACHE_ROOT}/.sync.lock"
-SYNC_TTL=300
-mkdir -p "$CACHE_ROOT"
+CACHE_DIR="$HOME/.cache/omarchy/remote-sessions/hosts"
+LOCK_DIR="$CACHE_DIR/.locks"
+COOLDOWN=30
+FORCE=0
 
-FORCE="${1:-}"
-NOW=$(date +%s)
-if [[ "$FORCE" != "--force" && -f "$STAMP_FILE" ]]; then
-  LAST=$(cat "$STAMP_FILE" 2>/dev/null || echo 0)
-  if (( NOW - LAST < SYNC_TTL )); then
-    exit 0
-  fi
-fi
-
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  exit 0
-fi
-
-date +%s > "$STAMP_FILE"
-
-for h in controller gpu01 netctl1 netctl2; do
-  mkdir -p "${CACHE_ROOT}/${h}/agy" "${CACHE_ROOT}/${h}/claude"
-  (
-    rsync -az --timeout=4 -e "ssh -o BatchMode=yes -o ConnectTimeout=2" \
-      "${h}:.gemini/antigravity-cli*/conversations/*.db" \
-      "${CACHE_ROOT}/${h}/agy/" >/dev/null 2>&1 || true
-    rsync -az --timeout=4 -e "ssh -o BatchMode=yes -o ConnectTimeout=2" \
-      --include="*/" --include="*.jsonl" --exclude="*" \
-      "${h}:.claude*/" \
-      "${CACHE_ROOT}/${h}/claude/" >/dev/null 2>&1 || true
-  ) &
+for arg in "$@"; do
+    [[ "$arg" == "--force" ]] && FORCE=1
 done
-wait
+
+# Respect localhostOnly plugin setting unless --force is passed
+SETTINGS_FILE="$HOME/.config/omarchy/File-System-Watcher-Sessions.json"
+if [[ $FORCE -eq 0 && -f "$SETTINGS_FILE" ]]; then
+    LOCAL_ONLY=$(jq -r '.localhostOnly // false' "$SETTINGS_FILE" 2>/dev/null)
+    if [[ "$LOCAL_ONLY" == "true" ]]; then
+        exit 0
+    fi
+fi
+
+mkdir -p "$CACHE_DIR" "$LOCK_DIR" "$HOME/.gemini/antigravity-cli/conversations"
+
+# Always refresh local host manifest first
+if [[ -x "$HOME/.local/bin/omarchy-export-host-manifest" ]]; then
+    "$HOME/.local/bin/omarchy-export-host-manifest" 2>/dev/null || true
+fi
+
+# Host definitions: name
+HOSTS=(controller gpu01 netctl1 netctl2)
+
+sync_host() {
+    local h="$1"
+    local hdir="$CACHE_DIR/$h"
+    local lockfile="$LOCK_DIR/$h.lock"
+    local stampfile="$hdir/.last_sync"
+
+    # Cooldown check
+    if [[ $FORCE -eq 0 && -f "$stampfile" ]]; then
+        local last now age
+        last=$(stat -c %Y "$stampfile" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        age=$((now - last))
+        (( age < COOLDOWN )) && return 0
+    fi
+
+    # Non-blocking lock per host
+    exec 9>"$lockfile"
+    flock -n 9 || return 0
+
+    mkdir -p "$hdir/claude" "$hdir/agy"
+
+    # Quick reachability check (2s max)
+    timeout 3 ssh -o BatchMode=yes -o ConnectTimeout=2 "$h" "true" 2>/dev/null || return 1
+
+    # 1. Generate and fetch lightweight per-host manifest (~10-90 KB) instead of multi-GB .db files
+    local manifest_tmp="$hdir/manifest.json.tmp.$$"
+    if timeout 10 ssh -o BatchMode=yes -o ConnectTimeout=2 "$h" \
+        "~/.local/bin/omarchy-export-host-manifest --stdout" > "$manifest_tmp" 2>/dev/null && [[ -s "$manifest_tmp" ]]; then
+        cp -f "$manifest_tmp" "$HOME/.gemini/antigravity-cli/conversations/.host_manifest_${h}.json.tmp.$$" &&
+        mv -f "$HOME/.gemini/antigravity-cli/conversations/.host_manifest_${h}.json.tmp.$$" \
+              "$HOME/.gemini/antigravity-cli/conversations/.host_manifest_${h}.json"
+        mv -f "$manifest_tmp" "$hdir/manifest.json"
+    else
+        rm -f "$manifest_tmp"
+    fi
+
+    # 2. Sync only non-Mutagen remote Claude profile dirs (~/.claude-work, ~/.claude-fiserv)
+    # Note: ~/.claude/projects is already synced across all hosts by Mutagen.
+    timeout 8 rsync -az --timeout=5 \
+        --include='*/' --include='*.jsonl' --exclude='subagents/' --exclude='*' \
+        "$h:.claude-work/projects/" "$hdir/claude/claude-work/projects/" 2>/dev/null
+    timeout 8 rsync -az --timeout=5 \
+        --include='*/' --include='*.jsonl' --exclude='subagents/' --exclude='*' \
+        "$h:.claude-fiserv/projects/" "$hdir/claude/claude-fiserv/projects/" 2>/dev/null
+
+    # 3. Sync lightweight AGY presence lock files (active window heartbeats)
+    timeout 5 rsync -az --delete --timeout=3 \
+        "$h:.gemini/antigravity-cli/presence/" "$hdir/agy/presence/" 2>/dev/null
+    timeout 5 rsync -az --delete --timeout=3 \
+        "$h:.gemini/antigravity-cli-personal/presence/" "$hdir/agy/presence-personal/" 2>/dev/null
+
+    date +%s > "$stampfile"
+}
+
+# Clean up legacy duplicate .db and Mutagen-synced claude/projects cache bloat
+rm -rf "$CACHE_DIR"/*/agy/*.db* "$CACHE_DIR"/*/agy/conversations "$CACHE_DIR"/*/claude/projects 2>/dev/null || true
+
+# If a specific host was requested, sync just that one
+TARGET_HOST=""
+for arg in "$@"; do
+    [[ "$arg" != "--force" ]] && TARGET_HOST="$arg"
+done
+
+if [[ -n "$TARGET_HOST" ]]; then
+    sync_host "$TARGET_HOST"
+    date +%s > "$CACHE_DIR/.last_sync"
+else
+    # Sync all hosts in parallel
+    for h in "${HOSTS[@]}"; do
+        sync_host "$h" &
+    done
+    wait
+    date +%s > "$CACHE_DIR/.last_sync"
+fi
