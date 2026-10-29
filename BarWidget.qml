@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 
 Ui.BarWidget {
@@ -124,8 +125,16 @@ Ui.BarWidget {
   readonly property bool isOverDailyQuota: usage.isBarOverDailyQuota !== undefined
     ? !!usage.isBarOverDailyQuota
     : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
-  readonly property color urgentColor: "#ff4d4d"
+  readonly property color rawFgColor: (bar && bar.foreground) ? bar.foreground : Commons.Color.foreground
+  readonly property color fgColor: Qt.rgba(
+    Math.min(1.0, rawFgColor.r + (1.0 - rawFgColor.r) * 0.42),
+    Math.min(1.0, rawFgColor.g + (1.0 - rawFgColor.g) * 0.42),
+    Math.min(1.0, rawFgColor.b + (1.0 - rawFgColor.b) * 0.42),
+    1.0
+  )
+  readonly property color urgentColor: "#ff6b6b"
 
+  opacity: 1.0
   implicitWidth: hasVisibleAgents ? button.implicitWidth : 0
   implicitHeight: hasVisibleAgents ? button.implicitHeight : 0
   visible: hasVisibleAgents
@@ -178,6 +187,8 @@ Ui.BarWidget {
     id: button
     bar: root.bar
     active: root.opened
+    dimmed: false
+    opacity: 1.0
     visible: root.hasVisibleAgents
     hasVisualContent: true
     labelVisible: false
@@ -204,9 +215,9 @@ Ui.BarWidget {
       width: contentRow.implicitWidth + Style.space(12)
       height: Math.min(parent.height - Style.space(4), Style.space(22))
       radius: height / 2
-      color: Qt.rgba(1.0, 0.24, 0.24, 0.22)
+      color: Qt.rgba(1.0, 0.24, 0.24, 0.26)
       border.width: 1
-      border.color: Qt.rgba(1.0, 0.30, 0.30, 0.72)
+      border.color: Qt.rgba(1.0, 0.38, 0.38, 0.85)
     }
 
     Row {
@@ -216,9 +227,10 @@ Ui.BarWidget {
 
       Text {
         textFormat: Text.PlainText
+        renderType: Text.NativeRendering
         anchors.verticalCenter: parent.verticalCenter
         text: "󱚣"
-        color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
+        color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : root.fgColor)
         font.family: Style.font.family
         font.pixelSize: Style.bar.iconFont
       }
@@ -226,9 +238,10 @@ Ui.BarWidget {
       Text {
         visible: !root.vertical && root.barCostLabel !== ""
         textFormat: Text.PlainText
+        renderType: Text.NativeRendering
         anchors.verticalCenter: parent.verticalCenter
         text: root.barCostLabel
-        color: root.isOverDailyQuota ? root.urgentColor : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
+        color: root.isOverDailyQuota ? "#ff9494" : (button.active && button.useActiveColor ? button.activeColor : root.fgColor)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         font.weight: root.isOverDailyQuota ? Font.Bold : Font.DemiBold

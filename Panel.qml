@@ -1,8 +1,8 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import qs.Ui as Ui
 
@@ -201,19 +201,20 @@ Ui.Panel {
     ? Math.max(Style.bar.iconSlot, barRow.implicitWidth + Style.space(18))
     : Style.bar.iconSlot
 
-  readonly property color fgColor: Color.popups.text
-  readonly property color bgColor: Color.popups.background
-  readonly property color borderColor: Color.popups.border
-  readonly property color accentColor: Color.accent
-  readonly property color urgentColor: "#ff4d4d"
+  readonly property color rawFgColor: (Commons.Color.popups && Commons.Color.popups.text)
+    ? Commons.Color.popups.text
+    : (bar && bar.foreground ? bar.foreground : Commons.Color.foreground)
+  readonly property color bgColor: (Commons.Color.popups && Commons.Color.popups.background)
+    ? Commons.Color.popups.background
+    : Commons.Color.background
+  readonly property color borderColor: (Commons.Color.popups && Commons.Color.popups.border)
+    ? Commons.Color.popups.border
+    : Commons.Color.accent
+  readonly property color accentColor: Commons.Color.accent ? Commons.Color.accent : "#7aa2f7"
+  readonly property color urgentColor: "#ff6b6b"
   readonly property bool isBarOverDailyQuota: usage.isBarOverDailyQuota !== undefined
     ? !!usage.isBarOverDailyQuota
     : (Number(usage.dailyQuotaUsd || 0) > 0 && Number(usage.aggregatedTotalTodayCost || 0) >= Number(usage.dailyQuotaUsd || 50))
-  readonly property color mutedColor: Qt.darker(fgColor, 1.35)
-  readonly property color subtleColor: Qt.darker(fgColor, 1.72)
-  readonly property color cardFill: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.035)
-  readonly property color cardBorder: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.12)
-  readonly property color elevatedFill: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.06)
 
   readonly property bool isLightPopupBackground: {
     var r = Number(bgColor.r || 0)
@@ -223,14 +224,47 @@ Ui.Panel {
     return luminance >= 0.62
   }
 
+  readonly property color fgColor: {
+    var r = Number(rawFgColor.r || 0)
+    var g = Number(rawFgColor.g || 0)
+    var b = Number(rawFgColor.b || 0)
+    if (!isLightPopupBackground) {
+      return Qt.rgba(
+        Math.min(1.0, r + (1.0 - r) * 0.42),
+        Math.min(1.0, g + (1.0 - g) * 0.42),
+        Math.min(1.0, b + (1.0 - b) * 0.42),
+        1.0
+      )
+    }
+    return Qt.darker(rawFgColor, 1.15)
+  }
+  readonly property color mutedColor: isLightPopupBackground
+    ? Qt.lighter(fgColor, 1.18)
+    : Qt.rgba(
+        Math.min(1.0, rawFgColor.r + (1.0 - rawFgColor.r) * 0.16),
+        Math.min(1.0, rawFgColor.g + (1.0 - rawFgColor.g) * 0.16),
+        Math.min(1.0, rawFgColor.b + (1.0 - rawFgColor.b) * 0.16),
+        1.0
+      )
+  readonly property color subtleColor: isLightPopupBackground
+    ? Qt.lighter(fgColor, 1.32)
+    : Qt.darker(rawFgColor, 1.10)
+  readonly property color cardFill: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, isLightPopupBackground ? 0.06 : 0.065)
+  readonly property color cardBorder: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.18)
+  readonly property color elevatedFill: Qt.rgba(fgColor.r, fgColor.g, fgColor.b, 0.10)
+
   implicitWidth: hostWidget ? 0 : (hasVisibleAgents ? button.implicitWidth : 0)
   implicitHeight: hostWidget ? 0 : (hasVisibleAgents ? button.implicitHeight : 0)
   visible: !hostWidget && hasVisibleAgents
+
+  opacity: 1.0
 
   Ui.WidgetButton {
     id: button
     bar: root.bar
     active: root.opened
+    dimmed: false
+    opacity: 1.0
     visible: !root.hostWidget && root.hasVisibleAgents
     hasVisualContent: true
     labelVisible: false
@@ -254,9 +288,9 @@ Ui.Panel {
       width: barRow.implicitWidth + Style.space(12)
       height: Math.min(parent.height - Style.space(4), Style.space(22))
       radius: height / 2
-      color: Qt.rgba(1.0, 0.24, 0.24, 0.22)
+      color: Qt.rgba(1.0, 0.24, 0.24, 0.26)
       border.width: 1
-      border.color: Qt.rgba(1.0, 0.30, 0.30, 0.72)
+      border.color: Qt.rgba(1.0, 0.38, 0.38, 0.85)
     }
 
     Row {
@@ -268,12 +302,13 @@ Ui.Panel {
         id: barIconLabel
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
+        renderType: Text.NativeRendering
         text: "󱚣"
         color: root.isBarOverDailyQuota
           ? root.urgentColor
-          : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
+          : (button.active && button.useActiveColor ? button.activeColor : root.fgColor)
         font.family: Style.font.family
-        font.pixelSize: Style.font.icon
+        font.pixelSize: Style.bar.iconFont
       }
 
       Text {
@@ -281,10 +316,11 @@ Ui.Panel {
         visible: root.shouldShowCostPill
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
+        renderType: Text.NativeRendering
         text: root.usage.barCostLabel
         color: root.isBarOverDailyQuota
-          ? root.urgentColor
-          : (button.active && button.useActiveColor ? button.activeColor : button.foreground)
+          ? "#ff9494"
+          : (button.active && button.useActiveColor ? button.activeColor : root.fgColor)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         font.weight: root.isBarOverDailyQuota ? Font.Bold : Font.DemiBold

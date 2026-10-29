@@ -1,19 +1,54 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 
 Item {
   id: root
 
   property var usage: null
-  property color fgColor: Color.popups.text
-  property color bgColor: Color.popups.background
-  property color borderColor: Color.popups.border
-  property color accentColor: Color.accent
-  property color mutedColor: Qt.darker(fgColor, 1.35)
-  property color subtleColor: Qt.darker(fgColor, 1.72)
+  readonly property color rawFgColor: (Commons.Color.popups && Commons.Color.popups.text)
+    ? Commons.Color.popups.text
+    : Commons.Color.foreground
+  property color bgColor: (Commons.Color.popups && Commons.Color.popups.background)
+    ? Commons.Color.popups.background
+    : Commons.Color.background
+  property color borderColor: (Commons.Color.popups && Commons.Color.popups.border)
+    ? Commons.Color.popups.border
+    : Commons.Color.accent
+  property color accentColor: Commons.Color.accent ? Commons.Color.accent : "#7aa2f7"
+  readonly property bool isLightPopupBackground: {
+    var r = Number(bgColor.r || 0)
+    var g = Number(bgColor.g || 0)
+    var b = Number(bgColor.b || 0)
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) >= 0.62
+  }
+  property color fgColor: {
+    var r = Number(rawFgColor.r || 0)
+    var g = Number(rawFgColor.g || 0)
+    var b = Number(rawFgColor.b || 0)
+    if (!isLightPopupBackground) {
+      return Qt.rgba(
+        Math.min(1.0, r + (1.0 - r) * 0.42),
+        Math.min(1.0, g + (1.0 - g) * 0.42),
+        Math.min(1.0, b + (1.0 - b) * 0.42),
+        1.0
+      )
+    }
+    return Qt.darker(rawFgColor, 1.15)
+  }
+  property color mutedColor: isLightPopupBackground
+    ? Qt.lighter(fgColor, 1.18)
+    : Qt.rgba(
+        Math.min(1.0, rawFgColor.r + (1.0 - rawFgColor.r) * 0.16),
+        Math.min(1.0, rawFgColor.g + (1.0 - rawFgColor.g) * 0.16),
+        Math.min(1.0, rawFgColor.b + (1.0 - rawFgColor.b) * 0.16),
+        1.0
+      )
+  property color subtleColor: isLightPopupBackground
+    ? Qt.lighter(fgColor, 1.32)
+    : Qt.darker(rawFgColor, 1.10)
 
   implicitWidth: parent ? parent.width : Style.space(516)
   implicitHeight: settingsColumn.implicitHeight
@@ -27,9 +62,9 @@ Item {
     width: parent ? parent.width : Style.space(516)
     implicitHeight: innerColumn.implicitHeight + Style.space(22)
     radius: Style.cornerRadius
-    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.035)
+    color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.065)
     border.width: 1
-    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.12)
+    border.color: Qt.rgba(root.fgColor.r, root.fgColor.g, root.fgColor.b, 0.18)
 
     Column {
       id: innerColumn
