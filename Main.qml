@@ -1,794 +1,1721 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
 
-// The display side of agent usage. All extraction lives behind
-// omarchy-agent-usage-update, which writes one JSON record per agent into
-// the usage directory; this file only discovers those records, watches them
-// for changes, and optionally merges snapshots synced from other machines.
 Item {
   id: root
   visible: false
+  width: 0
+  height: 0
 
-  property var settings: ({})
+  property var shell: null
+  property var manifest: null
+  property var settings: null
+  property int selectedIndex: 0
+  property bool showCombinedView: false
 
-  readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string pluginDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
-  readonly property string usageDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/agents/usage"
+  readonly property string homeDir: Quickshell.env("HOME") || ""
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || (homeDir + "/.local/state")
+  readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (homeDir + "/.config")
+  readonly property string usageDir: stateHome + "/omarchy/agents/usage"
+  readonly property string legacyUsageDir: stateHome + "/omarchy/agent-usage"
+  readonly property string stateSettingsPath: stateHome + "/omarchy/settings/nertwork.agents.json"
+  readonly property string profilesConfigPath: configHome + "/omarchy/agents/profiles.json"
+  readonly property string legacyAgentsConfigPath: configHome + "/omarchy/agents.json"
+  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string bundledUpdateBin: pluginDir + "/bin/update-all"
 
-  // ------------------------------------------------------------- discovery
+  readonly property var providerMeta: ({
+    "agy-personal": {
+      id: "agy-personal",
+      label: "AGY Personal",
+      shortLabel: "AGY · Personal",
+      displayName: "Antigravity · Personal",
+      badge: "personal",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "personal",
+      icon: "agy",
+      command: "agy-personal",
+      description: "Antigravity CLI · Personal / Homelab (Local & Homelab)",
+      order: 9,
+      defaultEnabled: true
+    },
+    "agy-org": {
+      id: "agy-org",
+      label: "AGY Org",
+      shortLabel: "AGY · Org",
+      displayName: "Antigravity · Org",
+      badge: "org",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "org",
+      icon: "agy",
+      command: "agy-org",
+      description: "Antigravity CLI · Organization / Team Cloud",
+      order: 9.5,
+      defaultEnabled: true
+    },
+    "agy": {
+      id: "agy",
+      label: "AGY Corp",
+      shortLabel: "AGY · Corp",
+      displayName: "Antigravity · Enterprise",
+      badge: "corp",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "default",
+      icon: "agy",
+      command: "agy-corp",
+      description: "Antigravity CLI · Enterprise Vertex AI",
+      order: 10,
+      defaultEnabled: true
+    },
+    "agy-sandbox": {
+      id: "agy-sandbox",
+      label: "AGY Sandbox",
+      shortLabel: "AGY · Sandbox",
+      displayName: "Antigravity · Sandbox",
+      badge: "sandbox",
+      family: "agy",
+      familyLabel: "AGY",
+      profile: "sandbox",
+      icon: "agy",
+      command: "agy-sandbox",
+      description: "Antigravity CLI · Secondary/Sandbox GCP project",
+      order: 11,
+      defaultEnabled: false
+    },
+    "claude-work": {
+      id: "claude-work",
+      label: "Claude Work",
+      shortLabel: "Claude · Work",
+      displayName: "Claude Code (Work)",
+      badge: "work",
+      family: "claude",
+      familyLabel: "Claude",
+      profile: "work",
+      icon: "claude",
+      command: "claude-work",
+      description: "Claude Code · Secondary/Work profile (~/.claude-work)",
+      order: 20,
+      defaultEnabled: false
+    },
+    "claude": {
+      id: "claude",
+      label: "Claude",
+      shortLabel: "Claude",
+      displayName: "Claude Code (Personal)",
+      badge: "personal",
+      family: "claude",
+      familyLabel: "Claude",
+      profile: "personal",
+      icon: "claude",
+      command: "claude",
+      description: "Claude Code · ~/.claude",
+      order: 21,
+      defaultEnabled: true
+    },
+    "codex": {
+      id: "codex",
+      label: "Codex",
+      shortLabel: "Codex",
+      displayName: "OpenAI Codex",
+      badge: "openai",
+      family: "codex",
+      familyLabel: "Codex",
+      profile: "default",
+      icon: "codex",
+      command: "codex",
+      description: "OpenAI Codex CLI",
+      order: 30,
+      defaultEnabled: false
+    },
+    "copilot": {
+      id: "copilot",
+      label: "Copilot",
+      shortLabel: "Copilot",
+      displayName: "GitHub Copilot",
+      badge: "github",
+      family: "copilot",
+      familyLabel: "Copilot",
+      profile: "default",
+      icon: "copilot",
+      command: "copilot",
+      description: "GitHub Copilot CLI",
+      order: 40,
+      defaultEnabled: false
+    },
+    "cursor": {
+      id: "cursor",
+      label: "Cursor",
+      shortLabel: "Cursor",
+      displayName: "Cursor Agent",
+      badge: "ide",
+      family: "cursor",
+      familyLabel: "Cursor",
+      profile: "default",
+      icon: "codex",
+      command: "cursor",
+      description: "Cursor IDE Agent",
+      order: 50,
+      defaultEnabled: false
+    },
+    "gemini": {
+      id: "gemini",
+      label: "Gemini",
+      shortLabel: "Gemini",
+      displayName: "Gemini CLI",
+      badge: "google",
+      family: "gemini",
+      familyLabel: "Gemini",
+      profile: "default",
+      icon: "agy",
+      command: "gemini",
+      description: "Google Gemini CLI",
+      order: 60,
+      defaultEnabled: false
+    },
+    "opencode": {
+      id: "opencode",
+      label: "OpenCode",
+      shortLabel: "OpenCode",
+      displayName: "OpenCode",
+      badge: "cli",
+      family: "opencode",
+      familyLabel: "OpenCode",
+      profile: "default",
+      icon: "codex",
+      command: "opencode",
+      description: "OpenCode CLI",
+      order: 70,
+      defaultEnabled: false
+    },
+    "openrouter": {
+      id: "openrouter",
+      label: "OpenRouter",
+      shortLabel: "OpenRouter",
+      displayName: "OpenRouter",
+      badge: "api",
+      family: "openrouter",
+      familyLabel: "OpenRouter",
+      profile: "default",
+      icon: "fireworks",
+      command: "openrouter",
+      description: "OpenRouter API",
+      order: 80,
+      defaultEnabled: false
+    },
+    "zaicodingplan": {
+      id: "zaicodingplan",
+      label: "Z.ai",
+      shortLabel: "Z.ai",
+      displayName: "Z.ai Coding Plan",
+      badge: "glm",
+      family: "zaicodingplan",
+      familyLabel: "Z.ai",
+      profile: "default",
+      icon: "fireworks",
+      command: "zai",
+      description: "Z.ai Coding Plan",
+      order: 90,
+      defaultEnabled: false
+    },
+    "grok": {
+      id: "grok",
+      label: "Grok",
+      shortLabel: "Grok",
+      displayName: "Grok CLI",
+      badge: "xai",
+      family: "grok",
+      familyLabel: "Grok",
+      profile: "default",
+      icon: "grok",
+      command: "grok",
+      description: "xAI Grok CLI",
+      order: 100,
+      defaultEnabled: false
+    },
+    "fireworks": {
+      id: "fireworks",
+      label: "Fireworks",
+      shortLabel: "Fireworks",
+      displayName: "Fireworks AI",
+      badge: "firectl",
+      family: "fireworks",
+      familyLabel: "Fireworks",
+      profile: "default",
+      icon: "fireworks",
+      command: "firectl",
+      description: "Fireworks AI CLI",
+      order: 110,
+      defaultEnabled: false
+    }
+  })
 
-  property var agentIds: []
-  property var agents: []
-  property int dataRevision: 0
+  readonly property var orderedProviderIds: [
+    "agy-personal",
+    "agy-org",
+    "agy",
+    "agy-sandbox",
+    "claude-work",
+    "claude",
+    "codex",
+    "copilot",
+    "cursor",
+    "gemini",
+    "opencode",
+    "openrouter",
+    "zaicodingplan",
+    "grok",
+    "fireworks"
+  ]
+
+  property var stateSettingsData: ({})
+  property var profilesConfigData: ({})
+  property var localSettingsOverride: ({})
+  property var summaryPayload: ({})
+
+  readonly property var effectiveSettings: {
+    var merged = {
+      localhostOnly: false,
+      dailyQuotaUsd: 50,
+      aggregateByDefault: true,
+      showAggregatedSummary: true,
+      barDisplayMode: "aggregated",
+      showBarCost: true,
+      barCostWindow: "today",
+      pollIntervalSeconds: 300,
+      terminalCommand: "",
+      providers: {}
+    }
+
+    var i = 0
+    for (i = 0; i < orderedProviderIds.length; i++) {
+      var pid = orderedProviderIds[i]
+      var meta = providerMeta[pid]
+      merged.providers[pid] = {
+        enabled: meta ? !!meta.defaultEnabled : false,
+        profile: meta ? meta.profile : "default",
+        label: meta ? meta.label : pid
+      }
+    }
+
+    function applySource(src) {
+      if (!src || typeof src !== "object") return
+      if (src.localhostOnly !== undefined) merged.localhostOnly = !!src.localhostOnly
+      if (src.dailyQuotaUsd !== undefined && !isNaN(Number(src.dailyQuotaUsd)))
+        merged.dailyQuotaUsd = Math.max(0, Number(src.dailyQuotaUsd))
+      if (src.aggregateByDefault !== undefined) merged.aggregateByDefault = !!src.aggregateByDefault
+      if (src.showAggregatedSummary !== undefined) merged.showAggregatedSummary = !!src.showAggregatedSummary
+      if (src.barDisplayMode !== undefined && String(src.barDisplayMode).trim() !== "")
+        merged.barDisplayMode = String(src.barDisplayMode).trim()
+      if (src.showBarCost !== undefined) merged.showBarCost = !!src.showBarCost
+      if (src.barCostWindow !== undefined && String(src.barCostWindow).trim() !== "")
+        merged.barCostWindow = String(src.barCostWindow).trim()
+      if (src.pollIntervalSeconds !== undefined && !isNaN(Number(src.pollIntervalSeconds)))
+        merged.pollIntervalSeconds = Number(src.pollIntervalSeconds)
+      if (src.terminalCommand !== undefined)
+        merged.terminalCommand = String(src.terminalCommand || "")
+
+      if (src.enabledAgents instanceof Array && !src.providers) {
+        for (var j = 0; j < orderedProviderIds.length; j++) {
+          var idKey = orderedProviderIds[j]
+          merged.providers[idKey].enabled = src.enabledAgents.indexOf(idKey) !== -1
+        }
+      }
+
+      if (src.providers && typeof src.providers === "object") {
+        var pKeys = Object.keys(src.providers)
+        for (var k = 0; k < pKeys.length; k++) {
+          var pk = pKeys[k]
+          var pv = src.providers[pk]
+          if (!merged.providers[pk]) {
+            merged.providers[pk] = { enabled: false, profile: "default", label: pk }
+          }
+          if ( typeof pv === "boolean" ) {
+            merged.providers[pk].enabled = pv
+          } else if (pv && typeof pv === "object") {
+            var pvKeys = Object.keys(pv)
+            for (var m = 0; m < pvKeys.length; m++) {
+              var pvk = pvKeys[m]
+              if (pv[pvk] !== undefined) {
+                merged.providers[pk][pvk] = pv[pvk]
+              }
+            }
+            if (pv.enabled !== undefined) merged.providers[pk].enabled = !!pv.enabled
+            if (pv.profile) merged.providers[pk].profile = String(pv.profile)
+            if (pv.label) merged.providers[pk].label = String(pv.label)
+          }
+        }
+      }
+    }
+
+    // Apply in priority order: injected shell defaults < profiles.json < state settings < runtime overrides
+    applySource(root.settings)
+    applySource(root.profilesConfigData)
+    applySource(root.stateSettingsData)
+    applySource(root.localSettingsOverride)
+
+    return merged
+  }
+
+  readonly property bool localhostOnly: effectiveSettings.localhostOnly !== undefined ? !!effectiveSettings.localhostOnly : false
+  readonly property real dailyQuotaUsd: effectiveSettings.dailyQuotaUsd !== undefined ? Math.max(0, Number(effectiveSettings.dailyQuotaUsd)) : 50
+  readonly property bool isOverDailyQuota: root.dailyQuotaUsd > 0 && root.aggregatedTotalTodayCost >= root.dailyQuotaUsd
+  readonly property bool isActiveProviderOverDailyQuota: root.dailyQuotaUsd > 0 && root.currentProvider !== null && Number(root.currentProvider.todayCostUsd || 0) >= root.dailyQuotaUsd
+  readonly property bool isBarOverDailyQuota: root.barDisplayMode === "active" ? root.isActiveProviderOverDailyQuota : root.isOverDailyQuota
+  readonly property bool aggregateByDefault: !!effectiveSettings.aggregateByDefault
+  readonly property bool showAggregatedSummary: !!effectiveSettings.showAggregatedSummary
+  readonly property string barDisplayMode: String(effectiveSettings.barDisplayMode || "aggregated")
+  readonly property bool showBarCost: effectiveSettings.showBarCost !== undefined ? !!effectiveSettings.showBarCost : true
+  readonly property string barCostWindow: String(effectiveSettings.barCostWindow || "today")
+  readonly property int pollIntervalSeconds: Math.max(60, Math.min(3600, Number(effectiveSettings.pollIntervalSeconds || 300)))
+  readonly property string terminalCommand: String(effectiveSettings.terminalCommand || "").trim()
+
+  property var discoveredFileIds: []
+  property var rawPayloads: ({})
+  property bool refreshing: false
+  readonly property alias isRefreshing: root.refreshing
+  property bool refreshQueued: false
+  property bool refreshQueuedForce: false
+  property double lastRefreshEpochMs: 0
+  property string saveScriptPayload: ""
+
+  signal requestOpen()
+  signal requestClose()
+  signal requestToggle()
+  signal requestToggleSettings()
+
+  function isProviderEnabled(providerId) {
+    var id = String(providerId || "").toLowerCase()
+    var pMap = effectiveSettings.providers || {}
+    if (pMap[id] !== undefined) {
+      return !!pMap[id].enabled
+    }
+    var meta = providerMeta[id]
+    return meta ? !!meta.defaultEnabled : false
+  }
+
+  function persistSettingsObject(updatedObj) {
+    root.localSettingsOverride = updatedObj
+    var jsonStr = JSON.stringify(updatedObj, null, 2)
+    root.saveScriptPayload = jsonStr
+    if (!saveSettingsProcess.running) {
+      saveSettingsProcess.running = true
+    }
+  }
+
+  function setProviderEnabled(providerId, enabled) {
+    var id = String(providerId || "").toLowerCase()
+    var next = JSON.parse(JSON.stringify(effectiveSettings))
+    if (!next.providers) next.providers = {}
+    if (!next.providers[id]) {
+      var meta = providerMeta[id]
+      next.providers[id] = {
+        enabled: !!enabled,
+        profile: meta ? meta.profile : "default",
+        label: meta ? meta.label : id
+      }
+    } else {
+      next.providers[id].enabled = !!enabled
+    }
+    var enabledList = []
+    for (var i = 0; i < orderedProviderIds.length; i++) {
+      var k = orderedProviderIds[i]
+      if (next.providers[k] && next.providers[k].enabled) {
+        enabledList.push(k)
+      }
+    }
+    next.enabledAgents = enabledList
+    persistSettingsObject(next)
+    refreshAll(false)
+  }
+
+  function setSetting(key, value) {
+    var next = JSON.parse(JSON.stringify(effectiveSettings))
+    next[key] = value
+    persistSettingsObject(next)
+  }
 
   Process {
-    id: listProcess
+    id: saveSettingsProcess
     running: false
-    command: ["find", root.usageDir, "-maxdepth", "1", "-name", "*.json", "-printf", "%f\n"]
+    command: [
+      "python3",
+      "-c",
+      "import json, os, sys; from pathlib import Path\n" +
+      "raw = sys.argv[1]\n" +
+      "data = json.loads(raw)\n" +
+      "for p_str in [sys.argv[2], sys.argv[3]]:\n" +
+      "    p = Path(p_str)\n" +
+      "    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)\n" +
+      "    existing = {}\n" +
+      "    if p.exists():\n" +
+      "        try:\n" +
+      "            existing = json.loads(p.read_text(encoding='utf-8'))\n" +
+      "        except Exception:\n" +
+      "            existing = {}\n" +
+      "    if isinstance(existing, dict):\n" +
+      "        old_p = existing.get('providers') if isinstance(existing.get('providers'), dict) else {}\n" +
+      "        existing.update(data)\n" +
+      "        if isinstance(data.get('providers'), dict):\n" +
+      "            mp = dict(old_p)\n" +
+      "            for k, v in data['providers'].items():\n" +
+      "                mp[k] = {**mp[k], **v} if (isinstance(mp.get(k), dict) and isinstance(v, dict)) else v\n" +
+      "            existing['providers'] = mp\n" +
+      "        p.write_text(json.dumps(existing, indent=2) + '\\n', encoding='utf-8')\n" +
+      "    else:\n" +
+      "        p.write_text(json.dumps(data, indent=2) + '\\n', encoding='utf-8')\n" +
+      "    try:\n" +
+      "        p.chmod(0o600)\n" +
+      "    except OSError:\n" +
+      "        pass\n",
+      root.saveScriptPayload,
+      root.stateSettingsPath,
+      root.profilesConfigPath
+    ]
+  }
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyAgentListing(text)
+  FileView {
+    id: stateSettingsView
+    path: root.stateSettingsPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var parsed = JSON.parse(text())
+        if (parsed && typeof parsed === "object") root.stateSettingsData = parsed
+      } catch (e) {}
+    }
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: profilesConfigView
+    path: root.profilesConfigPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var parsed = JSON.parse(text())
+        if (parsed && typeof parsed === "object") root.profilesConfigData = parsed
+      } catch (e) {}
+    }
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: summaryFileView
+    path: root.usageDir + "/_summary.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var parsed = JSON.parse(text())
+        if (parsed && typeof parsed === "object") {
+          root.summaryPayload = parsed
+          root.lastRefreshEpochMs = Date.now()
+        }
+      } catch (e) {}
+    }
+    onFileChanged: reload()
+  }
+
+  // Build list of JSON files to watch in ~/.local/state/omarchy/agents/usage/
+  readonly property var watchedFileIds: {
+    var set = {}
+    var list = []
+    var i = 0
+    for (i = 0; i < orderedProviderIds.length; i++) {
+      var pid = orderedProviderIds[i]
+      set[pid] = true
+      list.push(pid)
+    }
+    for (i = 0; i < discoveredFileIds.length; i++) {
+      var fid = discoveredFileIds[i]
+      if (!fid || fid.charAt(0) === "_") continue
+      if (!set[fid]) {
+        set[fid] = true
+        list.push(fid)
+      }
+    }
+    return list
+  }
+
+  readonly property var allProviders: {
+    var list = []
+    for (var i = 0; i < orderedProviderIds.length; i++) {
+      var id = orderedProviderIds[i]
+      var rec = normalizedRecord(id)
+      if (rec) list.push(rec)
+    }
+    return list
+  }
+
+  readonly property var enabledProviders: {
+    var list = []
+    for (var i = 0; i < allProviders.length; i++) {
+      var p = allProviders[i]
+      if (p && p.enabled) {
+        list.push(p)
+      }
+    }
+    return list
+  }
+
+  // Backward-compatible alias
+  readonly property alias visibleProviders: root.enabledProviders
+
+  readonly property real aggregatedTotalTodayCost: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].todayCostUsd || 0)
+    }
+    return sum
+  }
+
+  readonly property real aggregatedTotal7dCost: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].sevenDayCostUsd || 0)
+    }
+    return sum
+  }
+
+  readonly property real aggregatedTotal30dCost: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].thirtyDayCostUsd || 0)
+    }
+    return sum
+  }
+
+  readonly property double aggregatedTotalTodayTokens: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].todayTotalTokens || 0)
+    }
+    return sum
+  }
+
+  readonly property double aggregatedTotal7dTokens: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].sevenDayTokens || 0)
+    }
+    return sum
+  }
+
+  readonly property double aggregatedTotal30dTokens: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].thirtyDayTokens || 0)
+    }
+    return sum
+  }
+
+  readonly property int aggregatedTodayPrompts: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].todayPrompts || 0)
+    }
+    return sum
+  }
+
+  readonly property int aggregatedTodaySessions: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].todaySessions || 0)
+    }
+    return sum
+  }
+
+  readonly property int aggregatedTotalPrompts30d: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].totalPrompts || 0)
+    }
+    return sum
+  }
+
+  readonly property int aggregatedTotalSessions30d: {
+    var sum = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      sum += Number(enabledProviders[i].totalSessions || 0)
+    }
+    return sum
+  }
+
+  function familyTotals(familyName) {
+    var fam = String(familyName || "").toLowerCase()
+    var todayCost = 0
+    var sevenDayCost = 0
+    var thirtyDayCost = 0
+    var todayTok = 0
+    var sevenDayTok = 0
+    var thirtyDayTok = 0
+    var enabledCount = 0
+
+    for (var i = 0; i < enabledProviders.length; i++) {
+      var p = enabledProviders[i]
+      if (p && p.family === fam) {
+        enabledCount += 1
+        todayCost += Number(p.todayCostUsd || 0)
+        sevenDayCost += Number(p.sevenDayCostUsd || 0)
+        thirtyDayCost += Number(p.thirtyDayCostUsd || 0)
+        todayTok += Number(p.todayTotalTokens || 0)
+        sevenDayTok += Number(p.sevenDayTokens || 0)
+        thirtyDayTok += Number(p.thirtyDayTokens || 0)
+      }
+    }
+
+    return {
+      family: fam,
+      count: enabledCount,
+      todayCostUsd: todayCost,
+      sevenDayCostUsd: sevenDayCost,
+      thirtyDayCostUsd: thirtyDayCost,
+      todayTokens: todayTok,
+      sevenDayTokens: sevenDayTok,
+      thirtyDayTokens: thirtyDayTok
     }
   }
 
-  function rescanAgents() {
-    if (!listProcess.running) listProcess.running = true
-  }
+  readonly property var agyFamilyTotals: familyTotals("agy")
+  readonly property var claudeFamilyTotals: familyTotals("claude")
 
-  function applyAgentListing(output) {
-    var ids = []
-    var lines = String(output || "").split("\n")
-    for (var i = 0; i < lines.length; i++) {
-      var name = lines[i].trim()
-      if (name.slice(-5) === ".json") ids.push(name.slice(0, -5))
+  readonly property var workVsPersonalTotals: {
+    var wToday = 0, w7d = 0, w30d = 0, wTok30d = 0
+    var pToday = 0, p7d = 0, p30d = 0, pTok30d = 0
+    var cToday = 0, c7d = 0, c30d = 0, cTok30d = 0
+    for (var i = 0; i < enabledProviders.length; i++) {
+      var p = enabledProviders[i]
+      if (!p) continue
+      var isOrg = (p.id === "agy-org" || p.profile === "org" || p.badge === "org")
+      var isPersonal = (!isOrg && (p.id === "agy-personal" || p.id === "claude" || p.profile === "personal"))
+      if (isOrg) {
+        cToday += Number(p.todayCostUsd || 0)
+        c7d += Number(p.sevenDayCostUsd || 0)
+        c30d += Number(p.thirtyDayCostUsd || 0)
+        cTok30d += Number(p.thirtyDayTokens || 0)
+      } else if (isPersonal) {
+        pToday += Number(p.todayCostUsd || 0)
+        p7d += Number(p.sevenDayCostUsd || 0)
+        p30d += Number(p.thirtyDayCostUsd || 0)
+        pTok30d += Number(p.thirtyDayTokens || 0)
+      } else {
+        wToday += Number(p.todayCostUsd || 0)
+        w7d += Number(p.sevenDayCostUsd || 0)
+        w30d += Number(p.thirtyDayCostUsd || 0)
+        wTok30d += Number(p.thirtyDayTokens || 0)
+      }
     }
-    ids.sort()
-    // Same list, same objects: reassigning the model would tear down every
-    // FileView just to build identical ones.
-    if (JSON.stringify(ids) !== JSON.stringify(agentIds)) agentIds = ids
+    return {
+      workTodayCostUsd: Math.round(wToday * 100) / 100,
+      work7dCostUsd: Math.round(w7d * 100) / 100,
+      work30dCostUsd: Math.round(w30d * 100) / 100,
+      work30dTokens: Math.round(wTok30d),
+      personalTodayCostUsd: Math.round(pToday * 100) / 100,
+      personal7dCostUsd: Math.round(p7d * 100) / 100,
+      personal30dCostUsd: Math.round(p30d * 100) / 100,
+      personal30dTokens: Math.round(pTok30d),
+      orgTodayCostUsd: Math.round(cToday * 100) / 100,
+      org7dCostUsd: Math.round(c7d * 100) / 100,
+      org30dCostUsd: Math.round(c30d * 100) / 100,
+      org30dTokens: Math.round(cTok30d)
+    }
   }
 
-  Instantiator {
-    id: agentInstantiator
-    model: root.agentIds
+  // Synthesizes a combined virtual provider across all enabled modules for "Combined" view mode
+  readonly property var combinedProvider: {
+    var dayMap = {}
+    var dayOrder = []
+    var combinedModels = []
+    var combinedBreakdowns = []
+    var wsMap = {}
+    var hostMap = {}
+    var latestUpdated = ""
 
-    delegate: Agent {
-      required property var modelData
-      agentId: modelData
-      path: root.usageDir + "/" + modelData + ".json"
-      onRecordChanged: root.recordsChanged()
+    for (var i = 0; i < enabledProviders.length; i++) {
+      var p = enabledProviders[i]
+      if (!p) continue
+      if (p.updatedAt && (!latestUpdated || String(p.updatedAt) > latestUpdated)) {
+        latestUpdated = String(p.updatedAt)
+      }
+      var rDays = p.recentDays || []
+      for (var d = 0; d < rDays.length; d++) {
+        var dayEntry = rDays[d]
+        if (!dayEntry || !dayEntry.date) continue
+        var ds = String(dayEntry.date)
+        if (!dayMap[ds]) {
+          dayMap[ds] = {
+            date: ds,
+            tokens: 0,
+            messageCount: 0,
+            prompts: 0,
+            sessions: 0,
+            costUsd: 0
+          }
+          dayOrder.push(ds)
+        }
+        dayMap[ds].tokens += Number(dayEntry.tokens !== undefined ? dayEntry.tokens : (dayEntry.messageCount || 0))
+        dayMap[ds].messageCount = dayMap[ds].tokens
+        dayMap[ds].prompts += Number(dayEntry.prompts || 0)
+        dayMap[ds].sessions += Number(dayEntry.sessions || 0)
+        dayMap[ds].costUsd += Number(dayEntry.costUsd !== undefined ? dayEntry.costUsd : (dayEntry.costUSD || 0))
+      }
+
+      var mList = p.modelRows || []
+      for (var m = 0; m < mList.length; m++) {
+        var mr = mList[m]
+        combinedModels.push({
+          id: p.shortLabel + " · " + mr.label,
+          label: mr.label,
+          moduleLabel: p.shortLabel,
+          family: p.family,
+          inputTokens: mr.inputTokens,
+          outputTokens: mr.outputTokens,
+          cacheTokens: mr.cacheTokens,
+          totalTokens: mr.totalTokens,
+          costUsd: mr.costUsd
+        })
+      }
+
+      var wList = p.workspaceUsage || []
+      for (var w = 0; w < wList.length; w++) {
+        var wr = wList[w]
+        if (!wr || !wr.workspace) continue
+        var wk = p.shortLabel + ":" + String(wr.workspace)
+        if (!wsMap[wk]) {
+          wsMap[wk] = {
+            workspace: String(wr.workspace),
+            moduleLabel: p.shortLabel,
+            category: String(wr.category || p.badge || ""),
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+        wsMap[wk].sessions += Number(wr.sessions || 0)
+        wsMap[wk].prompts += Number(wr.prompts || 0)
+        wsMap[wk].tokens += Number(wr.tokens || 0)
+        wsMap[wk].costUsd = Math.round((wsMap[wk].costUsd + Number(wr.costUsd || 0)) * 100) / 100
+      }
+
+      var canonicalHosts = root.localhostOnly ? ["localhost"] : ["localhost"]
+      for (var ch = 0; ch < canonicalHosts.length; ch++) {
+        var chk = canonicalHosts[ch]
+        if (!hostMap[chk]) {
+          hostMap[chk] = {
+            host: chk,
+            role: chk === "localhost" ? "local" : "mesh-sync",
+            status: chk === "localhost" ? "local" : "synced",
+            lastSyncAt: "",
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+      }
+      var hList = p.hostsBreakdown || []
+      for (var h = 0; h < hList.length; h++) {
+        var hr = hList[h]
+        if (!hr || !hr.host) continue
+        var hk = String(hr.host)
+        if (root.localhostOnly && hk !== "localhost") continue
+        if (!hostMap[hk]) {
+          hostMap[hk] = {
+            host: hk,
+            role: String(hr.role || (hk === "localhost" ? "local" : "mesh")),
+            status: String(hr.status || "online"),
+            lastSyncAt: String(hr.lastSyncAt || ""),
+            sessions: 0,
+            prompts: 0,
+            tokens: 0,
+            costUsd: 0
+          }
+        }
+        hostMap[hk].sessions += Number(hr.sessions !== undefined ? hr.sessions : (hr.sessions30d || 0))
+        hostMap[hk].prompts += Number(hr.prompts !== undefined ? hr.prompts : (hr.prompts30d || 0))
+        hostMap[hk].tokens += Number(hr.tokens !== undefined ? hr.tokens : (hr.tokens30d || 0))
+        var hrCost = Number(hr.costUsd !== undefined ? hr.costUsd : (hr.costUsd30d || 0))
+        hostMap[hk].costUsd = Math.round((hostMap[hk].costUsd + hrCost) * 100) / 100
+      }
+
+      combinedBreakdowns.push({
+        project: p.shortLabel,
+        badge: p.badge,
+        scope: "localhost_module",
+        localTokensToday: p.todayTotalTokens,
+        localTokens7d: p.sevenDayTokens,
+        localTokens30d: p.thirtyDayTokens,
+        localCostUsdToday: p.todayCostUsd,
+        localCostUsd7d: p.sevenDayCostUsd,
+        localCostUsd30d: p.thirtyDayCostUsd,
+        localSessions30d: p.totalSessions,
+        tokens30d: p.sharedOrgTokens30d || p.thirtyDayTokens,
+        sharePct: aggregatedTotal30dCost > 0 ? Math.round((p.thirtyDayCostUsd / aggregatedTotal30dCost) * 1000) / 10 : 0
+      })
     }
 
-    onObjectAdded: (index, object) => root.rebuildAgents()
-    onObjectRemoved: (index, object) => root.rebuildAgents()
-  }
-
-  function rebuildAgents() {
-    var result = []
-    for (var i = 0; i < agentInstantiator.count; i++) {
-      var agent = agentInstantiator.objectAt(i)
-      if (agent) result.push(agent)
+    dayOrder.sort()
+    if (dayOrder.length > 7) {
+      dayOrder = dayOrder.slice(dayOrder.length - 7)
     }
-    agents = result
-    recordsChanged()
-  }
-
-  function recordsChanged() {
-    dataRevision++
-    scheduleLimitsRetry()
-    scheduleSync()
-  }
-
-  // A collector that could not reach its limits endpoint at all — typically
-  // the seconds after login before the network is up — writes retryAdvised
-  // into its record. Honor it with one sooner try instead of waiting out the
-  // full refresh interval; a run that reaches the endpoint clears the flag.
-  // Only the advising agents rerun, so an outage at one provider does not
-  // put every other collector on a 30-second treadmill.
-  property var retryAgentIds: []
-
-  Timer {
-    id: limitsRetry
-    interval: 30000
-    repeat: false
-    onTriggered: root.runUpdate("limits", root.retryAgentIds)
-  }
-
-  function scheduleLimitsRetry() {
-    var advising = []
-    for (var i = 0; i < agents.length; i++) {
-      var record = agents[i] ? agents[i].record : null
-      if (record && record.retryAdvised === true && providerEnabled(String(record.id || "")))
-        advising.push(String(record.id))
+    var mergedDays = []
+    for (var j = 0; j < dayOrder.length; j++) {
+      mergedDays.push(dayMap[dayOrder[j]])
     }
-    retryAgentIds = advising
-    if (advising.length > 0) limitsRetry.restart()
-    else limitsRetry.stop()
+
+    combinedModels.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.totalTokens - a.totalTokens
+    })
+
+    var totalCombinedModelCost = 0
+    var totalCombinedModelTok = 0
+    for (var cmIdx = 0; cmIdx < combinedModels.length; cmIdx++) {
+      totalCombinedModelCost += Number(combinedModels[cmIdx].costUsd || 0)
+      totalCombinedModelTok += Number(combinedModels[cmIdx].totalTokens || 0)
+    }
+    for (var mIdx = 0; mIdx < combinedModels.length; mIdx++) {
+      combinedModels[mIdx].shareRatio = totalCombinedModelCost > 0
+        ? (Number(combinedModels[mIdx].costUsd || 0) / totalCombinedModelCost)
+        : (totalCombinedModelTok > 0 ? (Number(combinedModels[mIdx].totalTokens || 0) / totalCombinedModelTok) : 0.05)
+    }
+
+    var combinedWorkspaces = []
+    for (var wkKey in wsMap) {
+      combinedWorkspaces.push(wsMap[wkKey])
+    }
+    combinedWorkspaces.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.tokens - a.tokens
+    })
+
+    var combinedHosts = []
+    for (var hkKey in hostMap) {
+      combinedHosts.push(hostMap[hkKey])
+    }
+    combinedHosts.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.tokens - a.tokens
+    })
+
+    return {
+      id: "combined",
+      label: "All Enabled Agents",
+      name: "All Enabled Agents",
+      shortLabel: "All Modules",
+      badge: enabledProviders.length + " modules",
+      family: "combined",
+      profile: root.localhostOnly ? "localhost" : "multi-host",
+      icon: "agy",
+      enabled: true,
+      ready: enabledProviders.length > 0,
+      hasLocalStats: true,
+      hasPromptStats: true,
+      updatedAt: latestUpdated,
+      tierLabel: root.localhostOnly ? "Localhost Combined" : "Multi-Host Combined (5 Nodes)",
+      usageStatusText: "",
+      authHelpText: "",
+      activeModel: enabledProviders.length + " active profiles",
+      limits: [],
+      todayCostUsd: aggregatedTotalTodayCost,
+      sevenDayCostUsd: aggregatedTotal7dCost,
+      thirtyDayCostUsd: aggregatedTotal30dCost,
+      todayTotalTokens: aggregatedTotalTodayTokens,
+      sevenDayTokens: aggregatedTotal7dTokens,
+      thirtyDayTokens: aggregatedTotal30dTokens,
+      todayPrompts: aggregatedTodayPrompts,
+      todaySessions: aggregatedTodaySessions,
+      totalPrompts: aggregatedTotalPrompts30d,
+      totalSessions: aggregatedTotalSessions30d,
+      activeDays: mergedDays.length,
+      recentDays: mergedDays,
+      modelRows: combinedModels.slice(0, 8),
+      workspaceUsage: combinedWorkspaces.slice(0, 8),
+      hostsBreakdown: combinedHosts,
+      projectsBreakdown: combinedBreakdowns,
+      sharedOrgTokens30d: 0
+    }
+  }
+
+  readonly property var meshHostsBreakdown: combinedProvider && combinedProvider.hostsBreakdown ? combinedProvider.hostsBreakdown : []
+
+  readonly property var currentProvider: {
+    if (showCombinedView && enabledProviders.length > 1) {
+      return combinedProvider
+    }
+    if (!enabledProviders || enabledProviders.length === 0) return null
+    var idx = Math.max(0, Math.min(selectedIndex, enabledProviders.length - 1))
+    return enabledProviders[idx]
+  }
+
+  onEnabledProvidersChanged: {
+    if (enabledProviders.length === 0) {
+      selectedIndex = 0
+    } else if (selectedIndex >= enabledProviders.length) {
+      selectedIndex = 0
+    }
   }
 
   Component.onCompleted: {
-    rescanAgents()
-    if (syncConfigured()) scheduleSync()
+    rescanFiles()
+    refreshAll(false)
   }
 
-  // -------------------------------------------------------------- refresh
-
-  property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 900)))
-  property string pendingUpdateKind: ""
-
-  Timer {
-    interval: root.refreshIntervalSec * 1000
-    running: true
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: root.runUpdate("normal")
-  }
-
-  Process {
-    id: updateProcess
-    running: false
-    onExited: {
-      root.rescanAgents()
-      if (root.pendingUpdateKind !== "") {
-        var kind = root.pendingUpdateKind
-        root.pendingUpdateKind = ""
-        root.runUpdate(kind)
-      }
-    }
-
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text.trim() !== "") console.warn("agents", text.trim())
-    }
-  }
-
-  function updateCommand(kind, agentIds) {
-    var command = [root.pluginDir + "/bin/update-all"]
-    if (kind === "force") command.push("--force")
-    if (kind === "limits") command.push("--limits-only")
-    var providers = settings && settings.providers ? settings.providers : {}
-    for (var id in providers) {
-      if (providers[id] && providers[id].enabled === false) command.push("--except", id)
-    }
-    if (agentIds) {
-      for (var i = 0; i < agentIds.length; i++) command.push(agentIds[i])
-    }
-    return command
-  }
-
-  function runUpdate(kind, agentIds) {
-    if (updateProcess.running) {
-      // Collapse queued requests to one full rerun; a forced refresh outranks
-      // the cheaper kinds it might have been queued behind.
-      if (kind === "force" || root.pendingUpdateKind === "") root.pendingUpdateKind = kind
+  function selectProvider(index) {
+    if (!enabledProviders || enabledProviders.length === 0) {
+      selectedIndex = 0
       return
     }
-    updateProcess.command = updateCommand(kind, agentIds)
-    updateProcess.running = true
+    showCombinedView = false
+    selectedIndex = Math.max(0, Math.min(index, enabledProviders.length - 1))
   }
 
-  function refresh() { refreshAll(true) }
-  function refreshAll(force) { runUpdate(force === true ? "force" : "normal") }
-
-  // Opening the panel wants the numbers that go stale on the wire, not
-  // another walk over every transcript on disk — the collectors reuse their
-  // recent scans in this mode.
-  function refreshLimits() { runUpdate("limits") }
-
-  // ------------------------------------------------------------- providers
-
-  // An agent earns a place in the bar and the panel by being switched on in
-  // settings and having actually produced numbers — locally or on a synced
-  // device. With nothing to show, the whole module collapses out of the bar
-  // rather than sitting there dimmed.
-  property var enabledProviders: {
-    var rev = dataRevision
-    var syncRev = syncRevision
-    var result = []
-    var localIds = {}
-    for (var i = 0; i < agents.length; i++) {
-      var record = agents[i] ? agents[i].record : null
-      if (!record || !record.id) continue
-      var id = String(record.id)
-      localIds[id] = true
-      if (!providerEnabled(id)) continue
-      var display = displayProvider(record)
-      if (providerHasData(display)) result.push(display)
+  function selectProviderById(id) {
+    var target = String(id || "").toLowerCase()
+    if (target === "combined" || target === "all") {
+      showCombinedView = true
+      return
     }
-    // An agent that only ever ran on another machine has no local record, but
-    // its synced numbers still deserve a tab. Rate limits stay blank — they
-    // are per-account and never travel.
-    var syncedProviders = syncConfigured() && aggregateData && aggregateData.providers ? aggregateData.providers : {}
-    for (var syncedId in syncedProviders) {
-      if (localIds[syncedId] || !providerEnabled(syncedId)) continue
-      var stats = syncedProviders[syncedId] || {}
-      var syncedDisplay = displayProvider({ id: syncedId, name: stats.providerName || syncedId })
-      if (providerHasData(syncedDisplay)) result.push(syncedDisplay)
-    }
-    return result
-  }
-
-  function providerEnabled(id) {
-    if (!settings || !settings.providers || !settings.providers[id]) return true
-    return settings.providers[id].enabled !== false
-  }
-
-  // All-time keeps a quiet day from hiding an agent; today's counts admit a
-  // machine whose only source is history.jsonl, which knows nothing older.
-  function providerHasData(p) {
-    return numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
-      || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
-      || numberValue(p.todaySessions) > 0 || floatValue(p.costUsd) > 0
-      || (p.limits && p.limits.length > 0)
-      || !!p.balance || p.ready === true
-  }
-
-  // A prepaid agent's credit ledger. Like rate limits, the balance is
-  // per-account and never merged across devices.
-  function balanceValue(raw) {
-    if (!raw || typeof raw !== "object") return null
-    var remaining = Number(raw.remaining)
-    var funded = Number(raw.funded)
-    if (!isFinite(remaining) || remaining < 0) return null
-    return {
-      remaining: remaining,
-      funded: isFinite(funded) && funded > 0 ? funded : 0,
-      spent: Math.max(0, Number(raw.spent) || 0),
-      currency: String(raw.currency || "USD"),
-      estimated: raw.estimated === true
-    }
-  }
-
-  function displayProvider(record) {
-    var stats = syncedStatsFor(String(record.id))
-    var synced = !!stats
-    var deviceCount = synced ? Number(stats.deviceCount || aggregateData.deviceCount || 0) : 0
-
-    return {
-      providerId: String(record.id),
-      providerName: String(record.name || record.id),
-      ready: record.ready === true || synced,
-      usageStatusText: String(record.usageStatusText || ""),
-      authHelpText: String(record.authHelpText || ""),
-
-      // Rate limits and balances stay per-account and are never merged
-      // across devices.
-      limits: Array.isArray(record.limits) ? record.limits : [],
-      tierLabel: String(record.tierLabel || ""),
-      balance: balanceValue(record.balance),
-
-      costUsd: synced ? floatValue(stats.costUsd) : floatValue(record.costUsd),
-      todayCostUsd: synced ? floatValue(stats.todayCostUsd) : floatValue(record.todayCostUsd),
-
-      todayPrompts: synced ? numberValue(stats.todayPrompts) : numberValue(record.todayPrompts),
-      todaySessions: synced ? numberValue(stats.todaySessions) : numberValue(record.todaySessions),
-      todayTotalTokens: synced ? numberValue(stats.todayTotalTokens) : numberValue(record.todayTotalTokens),
-      todayTokensByModel: synced ? (stats.todayTokensByModel || ({})) : (record.todayTokensByModel || ({})),
-      recentDays: synced ? (stats.recentDays || []) : (record.recentDays || []),
-      recentConversations: Array.isArray(record.recentConversations) ? record.recentConversations : [],
-      totalPrompts: synced ? numberValue(stats.totalPrompts) : numberValue(record.totalPrompts),
-      totalSessions: synced ? numberValue(stats.totalSessions) : numberValue(record.totalSessions),
-      activeDays: synced ? numberValue(stats.activeDays) : numberValue(record.activeDays),
-      modelUsage: synced ? (stats.modelUsage || ({})) : (record.modelUsage || ({})),
-      hasLocalStats: synced ? (stats.hasLocalStats !== false) : (record.hasLocalStats !== false),
-      hasPromptStats: synced ? (stats.hasPromptStats !== false) : (record.hasPromptStats !== false),
-
-      syncEnabled: synced,
-      syncDeviceCount: deviceCount,
-      syncUpdatedAt: aggregateData && aggregateData.updatedAt ? aggregateData.updatedAt : ""
-    }
-  }
-
-  function setting(name, fallback) {
-    var value = settings ? settings[name] : undefined
-    return value === undefined || value === null ? fallback : value
-  }
-
-  // ------------------------------------------------------------------ sync
-
-  property var syncModeSetting: setting("syncMode", setting("syncEnabled", false))
-  property bool syncEnabled: parseSyncEnabled(syncModeSetting)
-  property string syncDir: String(setting("syncDir", ""))
-  property string syncFileName: String(setting("syncFileName", ""))
-  property string syncDeviceId: String(setting("syncDeviceId", ""))
-  property string detectedHostname: ""
-  readonly property string syncEffectiveDir: expandPath(syncDir)
-  readonly property string syncEffectiveFileName: safeSnapshotFileName(syncFileName, syncDeviceId)
-  readonly property string syncEffectiveDeviceId: safeDeviceId(syncDeviceId || syncEffectiveFileName.replace(/\.json$/i, ""))
-  readonly property string syncSnapshotPath: syncConfigured() ? syncEffectiveDir + "/" + syncEffectiveFileName : home + "/.cache/omarchy/agents-disabled.json"
-  property var aggregateData: ({})
-  property int syncRevision: 0
-  property bool syncRunning: false
-  property bool syncRequestedWhileRunning: false
-  property string syncStatusText: ""
-  property double aggregateUpdatedAtMs: aggregateData && aggregateData.updatedAtMs ? Number(aggregateData.updatedAtMs) : 0
-
-  onSyncEnabledChanged: syncSettingsChanged()
-  onSyncDirChanged: syncSettingsChanged()
-  onSyncFileNameChanged: if (syncConfigured()) scheduleSync()
-  onSyncDeviceIdChanged: if (syncConfigured()) scheduleSync()
-
-  Timer {
-    id: syncDebounce
-    interval: 1000
-    repeat: false
-    onTriggered: root.runSync()
-  }
-
-  Process {
-    id: syncMkdirProcess
-    running: false
-    onRunningChanged: root.updateSyncRunning()
-    onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        if (root.syncConfigured()) root.syncStatusText = "Usage sync mkdir failed"
-        root.finishSyncRun()
+    for (var i = 0; i < enabledProviders.length; i++) {
+      if (enabledProviders[i].id === target) {
+        showCombinedView = false
+        selectedIndex = i
         return
       }
-      root.writeSyncSnapshot()
     }
   }
 
-  Process {
-    id: syncScanProcess
-    running: false
-    onRunningChanged: root.updateSyncRunning()
-    onExited: function(exitCode) {
-      if (exitCode !== 0 && root.syncConfigured()) root.syncStatusText = "Usage sync scan failed"
-      root.finishSyncRun()
-    }
-
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.parseSyncScanOutput(text)
-    }
-
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text.trim() !== "") console.warn("agents/sync", text.trim())
-    }
+  function cycleProvider(step) {
+    if (!enabledProviders || enabledProviders.length === 0) return
+    var count = enabledProviders.length
+    var delta = Number(step || 1)
+    showCombinedView = false
+    selectedIndex = (selectedIndex + delta % count + count) % count
   }
 
-  FileView {
-    id: syncSnapshotFile
-    path: root.syncSnapshotPath
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-  }
-
-  FileView {
-    id: hostnameFile
-    path: "/etc/hostname"
-    watchChanges: false
-    printErrors: false
-    onLoaded: root.detectedHostname = String(text() || "").trim()
-  }
-
-  function parseSyncEnabled(value) {
-    if (value === true) return true
-    var text = String(value || "").trim().toLowerCase()
-    return text === "on" || text === "enabled" || text === "true" || text === "yes" || text === "1"
-  }
-
-  function syncConfigured() {
-    return root.syncEnabled === true && String(root.syncDir || "").trim() !== ""
-  }
-
-  function syncSettingsChanged() {
-    if (syncConfigured()) {
-      scheduleSync()
-    } else {
-      syncDebounce.stop()
-      syncRequestedWhileRunning = false
-      aggregateData = ({})
-      syncStatusText = ""
-      syncRevision++
-    }
-  }
-
-  function updateSyncRunning() {
-    root.syncRunning = syncMkdirProcess.running || syncScanProcess.running
-  }
-
-  function scheduleSync() {
-    if (!syncConfigured()) return
-    syncDebounce.restart()
-  }
-
-  function runSync() {
-    if (!syncConfigured()) return
-    if (root.syncRunning) {
-      syncRequestedWhileRunning = true
+  function refreshAll(force) {
+    var wantForce = !!force
+    if (!wantForce && root.lastRefreshEpochMs > 0 && (Date.now() - root.lastRefreshEpochMs) < 45000) {
       return
     }
-
-    syncRequestedWhileRunning = false
-    syncStatusText = ""
-    syncMkdirProcess.command = ["mkdir", "-m", "700", "-p", root.syncEffectiveDir]
-    syncMkdirProcess.running = true
-  }
-
-  function writeSyncSnapshot() {
-    if (!syncConfigured()) {
-      finishSyncRun()
+    if (refreshProcess.running) {
+      refreshQueued = true
+      refreshQueuedForce = refreshQueuedForce || wantForce
       return
     }
-    syncSnapshotFile.setText(JSON.stringify(localSnapshot(), null, 2) + "\n")
-    Qt.callLater(root.startSyncScan)
+    refreshing = true
+    root.lastRefreshEpochMs = Date.now()
+    var cmd = [root.bundledUpdateBin]
+    if (wantForce) cmd.push("--force")
+    refreshProcess.command = cmd
+    refreshProcess.running = true
   }
 
-  function startSyncScan() {
-    if (!syncConfigured()) {
-      finishSyncRun()
-      return
-    }
-    var script = "dir=$0; [[ -d \"$dir\" ]] || exit 0; shopt -s nullglob; for f in \"$dir\"/*.json; do [[ -f \"$f\" ]] || continue; printf '===%s===\\n' \"$f\"; cat \"$f\"; printf '\\n=== EOM ===\\n'; done"
-    syncScanProcess.command = ["bash", "-c", script, root.syncEffectiveDir]
-    syncScanProcess.running = true
-  }
-
-  function finishSyncRun() {
-    if (syncRequestedWhileRunning && syncConfigured()) {
-      syncRequestedWhileRunning = false
-      scheduleSync()
-    }
-  }
-
-  function expandPath(path) {
-    var value = String(path || "").trim()
-    if (value === "") return ""
-    if (value === "~") return home
-    if (value.indexOf("~/") === 0) return home + value.substring(1)
-    if (value.indexOf("$HOME/") === 0) return home + value.substring(5)
-    if (value.charAt(0) !== "/") return home + "/" + value
-    return value
-  }
-
-  function safeDeviceId(raw) {
-    var value = String(raw || "").trim()
-    if (value === "") value = Quickshell.env("HOSTNAME") || root.detectedHostname || Quickshell.env("HOST") || Quickshell.env("USER") || "device"
-    value = value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "")
-    if (value === "") value = "device"
-    return value.length > 80 ? value.substring(0, 80) : value
-  }
-
-  function safeSnapshotFileName(rawFileName, rawDeviceId) {
-    var value = String(rawFileName || "").trim()
-    if (value === "") value = safeDeviceId(rawDeviceId) + ".json"
-    value = value.split("/").pop().replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "")
-    if (value === "") value = safeDeviceId(rawDeviceId) + ".json"
-    if (!/\.json$/i.test(value)) value += ".json"
-    return value.length > 100 ? value.substring(0, 95) + ".json" : value
-  }
-
-  function parseSyncScanOutput(output) {
-    var lines = String(output || "").split("\n")
-    var snapshots = []
-    var currentPath = ""
-    var currentJson = []
-
-    function flush() {
-      if (currentPath === "") return
-      var raw = currentJson.join("\n").trim()
-      try {
-        var parsed = JSON.parse(raw)
-        if (parsed && parsed.providers) snapshots.push(parsed)
-      } catch (e) {
-        console.warn("agents/sync", "Ignoring bad snapshot", currentPath, e)
-      }
-      currentPath = ""
-      currentJson = []
-    }
-
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i]
-      var start = line.match(/^===(.+)===$/)
-      if (start && line !== "=== EOM ===") {
-        flush()
-        currentPath = start[1]
-        currentJson = []
-        continue
-      }
-      if (line === "=== EOM ===") {
-        flush()
-        continue
-      }
-      if (currentPath !== "") currentJson.push(line)
-    }
-    flush()
-
-    aggregateData = aggregateSnapshots(snapshots)
-    syncStatusText = ""
-    syncRevision++
-  }
-
-  function cloneValue(value, fallback) {
-    if (value === undefined || value === null) return fallback
-    try {
-      return JSON.parse(JSON.stringify(value))
-    } catch (e) {
-      return fallback
-    }
-  }
-
-  function numberValue(value) {
-    var n = Number(value || 0)
-    return isFinite(n) ? Math.round(n) : 0
-  }
-
-  function floatValue(value) {
-    var n = Number(value || 0)
-    return isFinite(n) ? Number(n.toFixed(2)) : 0
-  }
-
-  function dateString(date) {
-    var y = date.getFullYear()
-    var m = String(date.getMonth() + 1).padStart(2, "0")
-    var d = String(date.getDate()).padStart(2, "0")
-    return y + "-" + m + "-" + d
-  }
-
-  function recentDateStrings() {
-    var result = []
-    for (var offset = 6; offset >= 0; offset--) {
-      var date = new Date()
-      date.setDate(date.getDate() - offset)
-      result.push(dateString(date))
-    }
-    return result
-  }
-
-  function emptyTokenBucket() {
-    return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0.0 }
-  }
-
-  // Device-scoped stats add up across machines; account-scoped stats
-  // (Fireworks' billing API) are replicas of the same upstream truth on
-  // every synced device, so the widest value wins — summing them would
-  // double every token per machine.
-  function combineNumber(additive, current, value) {
-    return additive ? numberValue(current) + numberValue(value) : Math.max(numberValue(current), numberValue(value))
-  }
-
-  function combineFloat(additive, current, value) {
-    var c = Number(current || 0)
-    var v = Number(value || 0)
-    var result = additive ? c + v : Math.max(c, v)
-    return isFinite(result) ? Number(result.toFixed(2)) : 0
-  }
-
-  function combineObjectNumbers(additive, target, source) {
-    if (!source) return
-    for (var key in source) {
-      if (key === "costUsd" || key === "todayCostUsd") {
-        target[key] = combineFloat(additive, target[key], source[key])
-      } else {
-        target[key] = combineNumber(additive, target[key], source[key])
+  function reloadFiles() {
+    for (var i = 0; i < fileWatchers.count; i++) {
+      var watcher = fileWatchers.itemAt(i)
+      if (watcher && typeof watcher.reload === "function") {
+        watcher.reload()
       }
     }
+    summaryFileView.reload()
   }
 
-  function aggregateSnapshots(snapshots) {
-    var dates = recentDateStrings()
-    var devices = {}
-    var providers = {}
+  function rescanFiles() {
+    if (!scanFilesProcess.running) {
+      scanFilesProcess.running = true
+    }
+  }
 
-    function providerAcc(id) {
-      if (providers[id]) return providers[id]
-      var recentByDay = {}
-      var recentCostByDay = {}
-      for (var d = 0; d < dates.length; d++) {
-        recentByDay[dates[d]] = 0
-        recentCostByDay[dates[d]] = 0.0
+  readonly property real barDisplayCostValue: {
+    var win = root.barCostWindow
+    if (root.barDisplayMode === "active" && root.currentProvider) {
+      if (win === "today") return Number(root.currentProvider.todayCostUsd || 0)
+      if (win === "7d") return Number(root.currentProvider.sevenDayCostUsd || 0)
+      return Number(root.currentProvider.thirtyDayCostUsd || 0)
+    }
+    if (win === "today") return Number(root.aggregatedTotalTodayCost || 0)
+    if (win === "7d") return Number(root.aggregatedTotal7dCost || 0)
+    return Number(root.aggregatedTotal30dCost || 0)
+  }
+
+  readonly property string barCostLabel: {
+    if (!root.showBarCost || root.barDisplayMode === "icon") return ""
+    return root.formatUsd(root.barDisplayCostValue, true)
+  }
+
+  readonly property string barTooltipText: {
+    if (root.enabledProviders.length === 0) return "AI Agents · No modules enabled"
+    var scopePrefix = root.localhostOnly ? "Localhost Total" : "5-Node Total"
+    var quotaNote = root.dailyQuotaUsd > 0
+      ? (" · Quota " + root.formatUsd(root.dailyQuotaUsd, true) + "/day" + (root.isOverDailyQuota ? " [OVER QUOTA]" : ""))
+      : ""
+    var totalLine = scopePrefix + ": Today " + root.formatUsd(root.aggregatedTotalTodayCost, false) + quotaNote
+      + " · 7d " + root.formatUsd(root.aggregatedTotal7dCost, false)
+      + " · 30d " + root.formatUsd(root.aggregatedTotal30dCost, false)
+      + "  [Work 30d: " + root.formatUsd(root.workVsPersonalTotals.work30dCostUsd, false)
+      + " · Org 30d: " + root.formatUsd(root.workVsPersonalTotals.org30dCostUsd, false)
+      + " · Personal 30d: " + root.formatUsd(root.workVsPersonalTotals.personal30dCostUsd, false) + "]"
+    if (root.currentProvider) {
+      return root.currentProvider.shortLabel + " (Today " + root.formatUsd(root.currentProvider.todayCostUsd, false) + " · 30d " + root.formatUsd(root.currentProvider.thirtyDayCostUsd, false) + ")  |  " + totalLine
+    }
+    return totalLine
+  }
+
+  function providersByGroup(groupName) {
+    var out = []
+    var g = String(groupName || "").toLowerCase()
+    for (var i = 0; i < root.allProviders.length; i++) {
+      var p = root.allProviders[i]
+      var pf = String(p.family || "other").toLowerCase()
+      if (g === "agy" && pf === "agy") out.push(p)
+      else if (g === "claude" && pf === "claude") out.push(p)
+      else if (g === "other" && pf !== "agy" && pf !== "claude") out.push(p)
+    }
+    return out
+  }
+
+  function statusJson() {
+    var mods = []
+    for (var i = 0; i < root.enabledProviders.length; i++) {
+      var p = root.enabledProviders[i]
+      mods.push({
+        id: p.id,
+        shortLabel: p.shortLabel,
+        profile: p.profile,
+        todayCostUsd: p.todayCostUsd,
+        sevenDayCostUsd: p.sevenDayCostUsd,
+        thirtyDayCostUsd: p.thirtyDayCostUsd,
+        todayTokens: p.todayTotalTokens,
+        sevenDayTokens: p.sevenDayTokens,
+        thirtyDayTokens: p.thirtyDayTokens
+      })
+    }
+    return JSON.stringify({
+      localhostOnly: root.localhostOnly,
+      dailyQuotaUsd: root.dailyQuotaUsd,
+      overDailyQuota: root.isOverDailyQuota,
+      barOverDailyQuota: root.isBarOverDailyQuota,
+      showAggregatedSummary: root.showAggregatedSummary,
+      barDisplayMode: root.barDisplayMode,
+      barCostLabel: root.barCostLabel,
+      aggregatedTodayCostUsd: root.aggregatedTotalTodayCost,
+      aggregated7dCostUsd: root.aggregatedTotal7dCost,
+      aggregated30dCostUsd: root.aggregatedTotal30dCost,
+      aggregated30dTokens: root.aggregatedTotal30dTokens,
+      agyFamilyTodayCostUsd: root.agyFamilyTotals.todayCostUsd,
+      agyFamily30dCostUsd: root.agyFamilyTotals.thirtyDayCostUsd,
+      claudeFamilyTodayCostUsd: root.claudeFamilyTotals.todayCostUsd,
+      claudeFamily30dCostUsd: root.claudeFamilyTotals.thirtyDayCostUsd,
+      workVsPersonal: root.workVsPersonalTotals,
+      enabledCount: root.enabledProviders.length,
+      enabledModules: mods
+    })
+  }
+
+  function defaultNameForId(id) {
+    var key = String(id || "").toLowerCase()
+    var meta = providerMeta[key]
+    if (meta && meta.label) return meta.label
+    if (key.length === 0) return "Agent"
+    return key.charAt(0).toUpperCase() + key.slice(1)
+  }
+
+  function findProjectBreakdownEntry(list, projectKey) {
+    if (!(list instanceof Array)) return null
+    var target = String(projectKey || "").toLowerCase()
+    if (!target) return null
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i]
+      if (!item) continue
+      var pName = String(item.project || item.profile || item.id || "").toLowerCase()
+      var pId = String(item.profileId || "").toLowerCase()
+      if (pName === target || pId === target || (target === "personal" && pName.indexOf("personal") !== -1)) {
+        return item
       }
-      providers[id] = {
-        providerId: id,
-        providerName: "",
+    }
+    return null
+  }
+
+  function scaleRecentDays(days, ratio, total7dCost, total7dTokens) {
+    if (!(days instanceof Array)) return []
+    var r = Math.max(0, Math.min(1, Number(ratio || 0)))
+    var out = []
+    for (var i = 0; i < days.length; i++) {
+      var d = days[i]
+      if (!d) continue
+      var rawTok = Number(d.tokens !== undefined ? d.tokens : (d.messageCount || 0))
+      var rawCost = Number(d.costUsd !== undefined ? d.costUsd : (d.costUSD || 0))
+      var scaledTok = Math.round(rawTok * r)
+      var scaledCost = Math.round(rawCost * r * 100) / 100
+      out.push({
+        date: String(d.date || ""),
+        tokens: scaledTok,
+        messageCount: scaledTok,
+        prompts: Math.round(Number(d.prompts || 0) * r),
+        sessions: Math.round(Number(d.sessions || 0) * r),
+        costUsd: scaledCost,
+        costUSD: scaledCost
+      })
+    }
+    return out
+  }
+
+  function buildModelRows(modelUsageMap, projectModels, costScaleRatio) {
+    var rows = []
+    var scale = (costScaleRatio !== undefined && costScaleRatio !== null) ? Number(costScaleRatio) : 1.0
+
+    if (modelUsageMap && typeof modelUsageMap === "object" && Object.keys(modelUsageMap).length > 0) {
+      var keys = Object.keys(modelUsageMap)
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i]
+        var entry = modelUsageMap[k]
+        if (!entry) continue
+        var inTok = Math.round(Number(entry.inputTokens || 0) * scale)
+        var outTok = Math.round(Number(entry.outputTokens || 0) * scale)
+        var cacheTok = Math.round((Number(entry.cacheReadInputTokens || 0) + Number(entry.cacheCreationInputTokens || 0)) * scale)
+        var totTok = entry.totalTokens !== undefined ? Math.round(Number(entry.totalTokens) * scale) : (inTok + outTok + cacheTok)
+        var mCost = entry.costUsd !== undefined ? (Number(entry.costUsd) * scale) : estimateModelCost(k, inTok, outTok, cacheTok)
+        if (totTok <= 0 && mCost <= 0) continue
+        rows.push({
+          id: k,
+          label: cleanModelLabel(k),
+          inputTokens: inTok,
+          outputTokens: outTok,
+          cacheTokens: cacheTok,
+          totalTokens: totTok,
+          costUsd: Math.round(mCost * 100) / 100
+        })
+      }
+    } else if (projectModels instanceof Array && projectModels.length > 0) {
+      for (var j = 0; j < projectModels.length; j++) {
+        var pm = projectModels[j]
+        if (!pm) continue
+        var mName = String(pm.model || pm.id || "model")
+        var pIn = Math.round(Number(pm.inputTokens || 0) * scale)
+        var pOut = Math.round(Number(pm.outputTokens || 0) * scale)
+        var pTot = Math.round(Number(pm.tokens || (pIn + pOut)) * scale)
+        var pCost = pm.costUsd !== undefined ? (Number(pm.costUsd) * scale) : estimateModelCost(mName, pIn, pOut, 0)
+        rows.push({
+          id: mName,
+          label: cleanModelLabel(mName),
+          inputTokens: pIn,
+          outputTokens: pOut,
+          cacheTokens: 0,
+          totalTokens: pTot,
+          costUsd: Math.round(pCost * 100) / 100
+        })
+      }
+    }
+
+    rows.sort(function(a, b) {
+      if (b.costUsd !== a.costUsd) return b.costUsd - a.costUsd
+      return b.totalTokens - a.totalTokens
+    })
+
+    var maxTok = 1
+    var maxCost = 0.01
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r].totalTokens > maxTok) maxTok = rows[r].totalTokens
+      if (rows[r].costUsd > maxCost) maxCost = rows[r].costUsd
+    }
+    for (var s = 0; s < rows.length; s++) {
+      rows[s].shareRatio = maxCost > 0.01 ? (rows[s].costUsd / maxCost) : (rows[s].totalTokens / maxTok)
+    }
+
+    return rows.slice(0, 6)
+  }
+
+  function cleanModelLabel(rawModel) {
+    var m = String(rawModel || "").trim()
+    if (!m) return "Unknown"
+    m = m.split("@")[0]
+    return m
+  }
+
+  function estimateModelCost(modelName, inTok, outTok, cacheTok) {
+    var m = String(modelName || "").toLowerCase()
+    var inM = Number(inTok || 0) / 1000000.0
+    var outM = Number(outTok || 0) / 1000000.0
+    var cacheM = Number(cacheTok || 0) / 1000000.0
+
+    if (m.indexOf("opus-4-1") !== -1 || m.indexOf("opus-4-0") !== -1 || m === "claude-opus-4") {
+      return inM * 15.0 + outM * 75.0 + cacheM * 1.50
+    }
+    if (m.indexOf("opus") !== -1 || m.indexOf("fable") !== -1) {
+      return inM * 5.0 + outM * 25.0 + cacheM * 0.50
+    }
+    if (m.indexOf("sonnet") !== -1) {
+      return inM * 3.0 + outM * 15.0 + cacheM * 0.30
+    }
+    if (m.indexOf("3-5-haiku") !== -1) {
+      return inM * 0.80 + outM * 4.0 + cacheM * 0.08
+    }
+    if (m.indexOf("haiku") !== -1) {
+      return inM * 1.0 + outM * 5.0 + cacheM * 0.10
+    }
+    if (m.indexOf("grok") !== -1) {
+      return inM * 3.0 + outM * 15.0 + cacheM * 0.75
+    }
+    if (m.indexOf("pro") !== -1 || m.indexOf("argon") !== -1 || m.indexOf("gpt-5") !== -1 || m.indexOf("codex") !== -1) {
+      return inM * 1.25 + outM * 10.0 + cacheM * 0.125
+    }
+    if (m.indexOf("lite") !== -1) {
+      return inM * 0.075 + outM * 0.30 + cacheM * 0.0075
+    }
+    // Default Gemini Flash pricing
+    return inM * 0.15 + outM * 0.60 + cacheM * 0.015
+  }
+
+  function normalizedRecord(id) {
+    var key = String(id || "").toLowerCase()
+    var baseMeta = providerMeta[key] || {
+      id: key,
+      label: defaultNameForId(key),
+      shortLabel: defaultNameForId(key),
+      displayName: defaultNameForId(key),
+      badge: "default",
+      family: key,
+      familyLabel: defaultNameForId(key),
+      profile: "default",
+      icon: key,
+      command: key,
+      description: defaultNameForId(key),
+      order: 999,
+      defaultEnabled: false
+    }
+
+    var isEnabled = isProviderEnabled(key)
+    var raw = rawPayloads[key] || null
+    var pCfg = (effectiveSettings.providers && effectiveSettings.providers[key]) ? effectiveSettings.providers[key] : {}
+    var meta = {
+      id: baseMeta.id,
+      label: String(pCfg.label || (raw && raw.name) || baseMeta.label),
+      shortLabel: String(pCfg.shortLabel || (raw && raw.shortLabel) || pCfg.label || baseMeta.shortLabel),
+      displayName: String(pCfg.displayName || (raw && raw.displayName) || baseMeta.displayName),
+      badge: String(pCfg.badge || (raw && raw.badge) || pCfg.gcpProject || pCfg.profile || baseMeta.badge),
+      family: baseMeta.family,
+      familyLabel: baseMeta.familyLabel,
+      profile: String(pCfg.gcpProject || pCfg.profile || (raw && raw.profile) || baseMeta.profile),
+      gcpProject: String(pCfg.gcpProject || (raw && raw.gcpProject) || ""),
+      configDir: String(pCfg.configDir || ""),
+      icon: baseMeta.icon,
+      command: baseMeta.command,
+      description: String(pCfg.description || baseMeta.description),
+      order: baseMeta.order,
+      defaultEnabled: baseMeta.defaultEnabled
+    }
+
+    // Fallback synthesis for modular profiles if dedicated file does not exist yet
+    // or if base file (agy.json / claude.json) contains unsplit multi-profile breakdown
+    var synthesizedFromParent = false
+    var targetProjectBreakdown = null
+    var parentRaw = null
+    var shareRatio = 1.0
+
+    if (key === "agy-sandbox" && !raw && rawPayloads["agy"]) {
+      parentRaw = rawPayloads["agy"]
+      targetProjectBreakdown = findProjectBreakdownEntry(parentRaw.projectsBreakdown, "agy-sandbox") || findProjectBreakdownEntry(parentRaw.projectsBreakdown, meta.profile)
+      if (targetProjectBreakdown) {
+        raw = parentRaw
+        synthesizedFromParent = true
+      }
+    } else if (key === "agy" && raw && !raw.profileId && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
+      var sbCfg = (effectiveSettings.providers && effectiveSettings.providers["agy-sandbox"]) ? effectiveSettings.providers["agy-sandbox"] : {}
+      var primaryEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "agy") || findProjectBreakdownEntry(raw.projectsBreakdown, meta.profile)
+      var sbEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "agy-sandbox") || findProjectBreakdownEntry(raw.projectsBreakdown, sbCfg.gcpProject || sbCfg.profile || "sandbox")
+      if (primaryEntry && sbEntry) {
+        var combinedLocalCost = Number(primaryEntry.localCostUsd30d || 0) + Number(sbEntry.localCostUsd30d || 0)
+        var rawTopCost = Number(raw.thirtyDayCostUsd !== undefined ? raw.thirtyDayCostUsd : (raw.costUsd || 0))
+        if (combinedLocalCost > 0 && Math.abs(rawTopCost - combinedLocalCost) < 2.0) {
+          parentRaw = raw
+          targetProjectBreakdown = primaryEntry
+          synthesizedFromParent = true
+        }
+      }
+    } else if (key === "claude-work" && !raw && rawPayloads["claude"]) {
+      parentRaw = rawPayloads["claude"]
+      targetProjectBreakdown = findProjectBreakdownEntry(parentRaw.projectsBreakdown, "claude-work") || findProjectBreakdownEntry(parentRaw.projectsBreakdown, meta.profile)
+      if (targetProjectBreakdown) {
+        raw = parentRaw
+        synthesizedFromParent = true
+      }
+    } else if (key === "claude" && raw && !raw.profileId && raw.projectsBreakdown instanceof Array && raw.projectsBreakdown.length > 1) {
+      var workEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "claude-work")
+      var personalEntry = findProjectBreakdownEntry(raw.projectsBreakdown, "claude") || findProjectBreakdownEntry(raw.projectsBreakdown, "personal")
+      if (workEntry && personalEntry) {
+        var combinedClaudeCost = Number(workEntry.costUSD || workEntry.costUsd || 0) + Number(personalEntry.costUSD || personalEntry.costUsd || 0)
+        var rawClaudeTopCost = Number(raw.thirtyDayCostUsd !== undefined ? raw.thirtyDayCostUsd : (raw.costUsd || 0))
+        if (combinedClaudeCost > 0 && Math.abs(rawClaudeTopCost - combinedClaudeCost) < 1.0 && Number(workEntry.costUSD || 0) > 0) {
+          parentRaw = raw
+          targetProjectBreakdown = personalEntry
+          synthesizedFromParent = true
+        }
+      }
+    }
+
+    if (!raw || typeof raw !== "object") {
+      return {
+        id: key,
+        label: meta.label,
+        name: meta.label,
+        shortLabel: meta.shortLabel,
+        displayName: meta.displayName,
+        badge: meta.badge,
+        family: meta.family,
+        familyLabel: meta.familyLabel,
+        profile: meta.profile,
+        icon: meta.icon,
+        command: meta.command,
+        description: meta.description,
+        order: meta.order,
+        enabled: isEnabled,
         ready: false,
         hasLocalStats: false,
         hasPromptStats: false,
-        costUsd: 0.0,
-        todayCostUsd: 0.0,
+        updatedAt: "",
+        tierLabel: meta.badge,
+        usageStatusText: "No local telemetry yet",
+        authHelpText: "",
+        activeModel: "",
+        limits: [],
+        todayCostUsd: 0,
+        sevenDayCostUsd: 0,
+        thirtyDayCostUsd: 0,
+        todayTotalTokens: 0,
+        sevenDayTokens: 0,
+        thirtyDayTokens: 0,
         todayPrompts: 0,
         todaySessions: 0,
-        todayTotalTokens: 0,
-        todayTokensByModel: ({}),
-        recentByDay: recentByDay,
-        recentCostByDay: recentCostByDay,
         totalPrompts: 0,
         totalSessions: 0,
         activeDays: 0,
-        activeDates: ({}),
-        modelUsage: ({}),
-        devices: ({})
+        recentDays: [],
+        modelRows: [],
+        workspaceUsage: [],
+        hostsBreakdown: [],
+        projectsBreakdown: [],
+        sharedOrgTokens30d: 0
       }
-      return providers[id]
     }
 
-    for (var i = 0; i < snapshots.length; i++) {
-      var snapshot = snapshots[i]
-      var device = safeDeviceId(snapshot.deviceId || "device")
-      devices[device] = true
-      var snapshotProviders = snapshot.providers || {}
-      for (var providerId in snapshotProviders) {
-        var stats = snapshotProviders[providerId] || {}
-        var acc = providerAcc(String(providerId))
-        acc.devices[device] = true
-        if (stats.providerName && acc.providerName === "") acc.providerName = String(stats.providerName)
-        acc.ready = acc.ready || stats.ready === true
-        acc.hasLocalStats = acc.hasLocalStats || stats.hasLocalStats !== false
-        // Snapshots from before the field existed only came from agents that
-        // count prompts, so a missing value reads as true.
-        acc.hasPromptStats = acc.hasPromptStats || stats.hasPromptStats !== false
-        var additive = String(stats.scope || "device") !== "account"
-        acc.costUsd = combineFloat(additive, acc.costUsd, stats.costUsd)
-        acc.todayCostUsd = combineFloat(additive, acc.todayCostUsd, stats.todayCostUsd)
-        acc.todayPrompts = combineNumber(additive, acc.todayPrompts, stats.todayPrompts)
-        acc.todaySessions = combineNumber(additive, acc.todaySessions, stats.todaySessions)
-        acc.todayTotalTokens = combineNumber(additive, acc.todayTotalTokens, stats.todayTotalTokens)
-        acc.totalPrompts = combineNumber(additive, acc.totalPrompts, stats.totalPrompts)
-        acc.totalSessions = combineNumber(additive, acc.totalSessions, stats.totalSessions)
-        // Active days overlap between machines, so union the dates rather than
-        // summing counts. Snapshots written before activeDates existed only
-        // carry a count; the widest one stands in for them.
-        var activeDates = Array.isArray(stats.activeDates) ? stats.activeDates : []
-        for (var ad = 0; ad < activeDates.length; ad++) acc.activeDates[String(activeDates[ad])] = true
-        acc.activeDays = Math.max(acc.activeDays, numberValue(stats.activeDays))
-        combineObjectNumbers(additive, acc.todayTokensByModel, stats.todayTokensByModel || {})
+    var todayCost = Number(raw.todayCostUsd !== undefined ? raw.todayCostUsd : 0)
+    var sevenDayCost = Number(raw.sevenDayCostUsd !== undefined ? raw.sevenDayCostUsd : 0)
+    var thirtyDayCost = Number(raw.thirtyDayCostUsd !== undefined ? raw.thirtyDayCostUsd : (raw.costUsd || 0))
 
-        var recent = Array.isArray(stats.recentDays) ? stats.recentDays : []
-        for (var r = 0; r < recent.length; r++) {
-          var day = recent[r] || {}
-          var date = String(day.date || "")
-          if (acc.recentByDay[date] !== undefined)
-            acc.recentByDay[date] = combineNumber(additive, acc.recentByDay[date], day.messageCount)
-          if (acc.recentCostByDay[date] !== undefined)
-            acc.recentCostByDay[date] = combineFloat(additive, acc.recentCostByDay[date], day.costUsd)
+    var todayTok = Number(raw.todayTotalTokens !== undefined ? raw.todayTotalTokens : (raw.todayTokens || 0))
+    var sevenDayTok = Number(raw.sevenDayTokens !== undefined ? raw.sevenDayTokens : 0)
+    var thirtyDayTok = Number(raw.totalTokens30d !== undefined ? raw.totalTokens30d : (raw.totalTokens || 0))
+
+    var todayPr = Number(raw.todayPrompts || 0)
+    var todaySess = Number(raw.todaySessions || 0)
+    var totalPr = Number(raw.totalPrompts30d !== undefined ? raw.totalPrompts30d : (raw.totalPrompts || 0))
+    var totalSess = Number(raw.totalSessions30d !== undefined ? raw.totalSessions30d : (raw.totalSessions || 0))
+    var sharedOrgTok30d = 0
+    var recentDaysList = raw.recentDays instanceof Array ? raw.recentDays : []
+    var scopedBreakdown = raw.projectsBreakdown instanceof Array ? raw.projectsBreakdown : []
+
+    if (synthesizedFromParent && targetProjectBreakdown) {
+      var pCost30d = Number(targetProjectBreakdown.localCostUsd30d !== undefined
+        ? targetProjectBreakdown.localCostUsd30d
+        : (targetProjectBreakdown.costUSD !== undefined ? targetProjectBreakdown.costUSD : (targetProjectBreakdown.costUsd || 0)))
+      var pTok30d = Number(targetProjectBreakdown.localTokens30d !== undefined
+        ? targetProjectBreakdown.localTokens30d
+        : (targetProjectBreakdown.tokens30d || 0))
+      var pTok7d = Number(targetProjectBreakdown.localTokens7d !== undefined
+        ? targetProjectBreakdown.localTokens7d
+        : (targetProjectBreakdown.tokens7d || 0))
+      var pTokToday = Number(targetProjectBreakdown.localTokensToday !== undefined
+        ? targetProjectBreakdown.localTokensToday
+        : (targetProjectBreakdown.tokensToday || 0))
+
+      var parentCost30d = Math.max(0.0001, thirtyDayCost)
+      var parentTok30d = Math.max(1, thirtyDayTok)
+      shareRatio = thirtyDayCost > 0 ? Math.min(1.0, pCost30d / parentCost30d) : Math.min(1.0, pTok30d / parentTok30d)
+
+      var ratePerTok = pTok30d > 0 ? (pCost30d / pTok30d) : 0
+      thirtyDayCost = pCost30d
+      sevenDayCost = targetProjectBreakdown.localCostUsd7d !== undefined
+        ? Number(targetProjectBreakdown.localCostUsd7d)
+        : (ratePerTok > 0 ? Math.round(pTok7d * ratePerTok * 100) / 100 : Math.round(sevenDayCost * shareRatio * 100) / 100)
+      todayCost = targetProjectBreakdown.localCostUsdToday !== undefined
+        ? Number(targetProjectBreakdown.localCostUsdToday)
+        : (ratePerTok > 0 ? Math.round(pTokToday * ratePerTok * 100) / 100 : Math.round(todayCost * shareRatio * 100) / 100)
+
+      thirtyDayTok = pTok30d
+      sevenDayTok = pTok7d
+      todayTok = pTokToday
+
+      if (targetProjectBreakdown.localSessions30d !== undefined) {
+        totalSess = Number(targetProjectBreakdown.localSessions30d)
+      } else if (targetProjectBreakdown.sessions !== undefined) {
+        totalSess = Number(targetProjectBreakdown.sessions)
+      }
+      if (targetProjectBreakdown.requests30d !== undefined && meta.family === "claude") {
+        totalPr = Number(targetProjectBreakdown.requests30d)
+      } else {
+        totalPr = Math.round(totalPr * shareRatio)
+      }
+      todayPr = Math.round(todayPr * shareRatio)
+      todaySess = Math.round(todaySess * shareRatio)
+      sharedOrgTok30d = Number(targetProjectBreakdown.tokens30d || 0)
+      recentDaysList = scaleRecentDays(recentDaysList, shareRatio, sevenDayCost, sevenDayTok)
+      scopedBreakdown = [targetProjectBreakdown]
+    } else if (scopedBreakdown.length > 0) {
+      var matchingEntry = findProjectBreakdownEntry(scopedBreakdown, meta.profile)
+      if (!matchingEntry && !meta.profile) matchingEntry = scopedBreakdown[0]
+      if (matchingEntry && matchingEntry.tokens30d !== undefined && matchingEntry.scope === "shared_gcp_project") {
+        sharedOrgTok30d = Number(matchingEntry.tokens30d || 0)
+      }
+    }
+
+    // If recentDays has today's date with >0 cost/tokens while top-level todayCostUsd was 0 (e.g. UTC vs local rollover)
+    if (todayCost <= 0 && recentDaysList.length > 0) {
+      var lastDay = recentDaysList[recentDaysList.length - 1]
+      if (lastDay) {
+        var lastCost = Number(lastDay.costUsd !== undefined ? lastDay.costUsd : (lastDay.costUSD || 0))
+        var lastTok = Number(lastDay.tokens !== undefined ? lastDay.tokens : (lastDay.messageCount || 0))
+        if (lastCost > 0 && todayTok > 0) {
+          todayCost = lastCost
+        }
+      }
+    }
+
+    var modelRows = buildModelRows(
+      synthesizedFromParent && targetProjectBreakdown && targetProjectBreakdown.models ? null : raw.modelUsage,
+      targetProjectBreakdown && targetProjectBreakdown.models ? targetProjectBreakdown.models : null,
+      synthesizedFromParent ? shareRatio : 1.0
+    )
+
+    var activeModelStr = String(raw.activeModel || "").trim()
+    if (!activeModelStr && modelRows.length > 0) {
+      activeModelStr = modelRows[0].label
+    }
+
+    var hasStats = (thirtyDayTok > 0 || thirtyDayCost > 0 || totalSess > 0 || totalPr > 0 || !!raw.hasLocalStats)
+
+    return {
+      id: key,
+      label: meta.label,
+      name: meta.label,
+      shortLabel: meta.shortLabel,
+      displayName: meta.displayName,
+      badge: meta.badge,
+      family: meta.family,
+      familyLabel: meta.familyLabel,
+      profile: String(raw.profile || meta.profile),
+      gcpProject: meta.gcpProject,
+      configDir: meta.configDir,
+      icon: meta.icon,
+      command: meta.command,
+      description: meta.description,
+      order: meta.order,
+      enabled: isEnabled,
+      ready: raw.ready !== undefined ? !!raw.ready : (raw.status === "online" || hasStats),
+      hasLocalStats: hasStats,
+      hasPromptStats: raw.hasPromptStats !== undefined ? !!raw.hasPromptStats : (totalPr > 0),
+      updatedAt: String(raw.updatedAt || raw.fetchedAt || ""),
+      tierLabel: String(raw.tierLabel || meta.badge),
+      usageStatusText: String(raw.usageStatusText || ""),
+      authHelpText: String(raw.authHelpText || ""),
+      activeModel: activeModelStr,
+      limits: raw.limits instanceof Array ? raw.limits : [],
+      todayCostUsd: Math.round(todayCost * 100) / 100,
+      sevenDayCostUsd: Math.round(sevenDayCost * 100) / 100,
+      thirtyDayCostUsd: Math.round(thirtyDayCost * 100) / 100,
+      todayTotalTokens: Math.round(todayTok),
+      sevenDayTokens: Math.round(sevenDayTok),
+      thirtyDayTokens: Math.round(thirtyDayTok),
+      todayPrompts: Math.round(todayPr),
+      todaySessions: Math.round(todaySess),
+      totalPrompts: Math.round(totalPr),
+      totalSessions: Math.round(totalSess),
+      activeDays: Number(raw.activeDays || recentDaysList.length),
+      recentDays: recentDaysList,
+      modelRows: modelRows,
+      workspaceUsage: raw.workspaceUsage instanceof Array ? raw.workspaceUsage : [],
+      hostsBreakdown: raw.hostsBreakdown instanceof Array ? raw.hostsBreakdown : [],
+      projectsBreakdown: scopedBreakdown,
+      sharedOrgTokens30d: sharedOrgTok30d
+    }
+  }
+
+  function formatCompactNumber(value) {
+    var num = Math.max(0, Number(value || 0))
+    if (num >= 1000000000) {
+      var b = num / 1000000000
+      return String(b >= 100 ? Math.round(b) : b.toFixed(b >= 10 ? 1 : 2)).replace(/\.0+$/, "") + "B"
+    }
+    if (num >= 1000000) {
+      var m = num / 1000000
+      return String(m >= 100 ? Math.round(m) : m.toFixed(1)).replace(/\.0$/, "") + "M"
+    }
+    if (num >= 1000) {
+      var k = num / 1000
+      return String(k >= 100 ? Math.round(k) : k.toFixed(1)).replace(/\.0$/, "") + "K"
+    }
+    return String(Math.round(num))
+  }
+
+  function formatUsd(value, compact) {
+    var num = Math.max(0, Number(value || 0))
+    if (compact && (num >= 100 || Math.abs(num - Math.round(num)) < 0.005)) {
+      return "$" + Math.round(num)
+    }
+    return "$" + num.toFixed(2)
+  }
+
+  function formatUpdatedAt(isoText) {
+    if (!isoText) return "Not updated yet"
+    var parsed = new Date(isoText)
+    if (isNaN(parsed.getTime())) return "Updated recently"
+    var diffSec = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000))
+    if (diffSec < 60) return "Updated just now"
+    if (diffSec < 3600) return "Updated " + Math.floor(diffSec / 60) + "m ago"
+    if (diffSec < 86400) return "Updated " + Math.floor(diffSec / 3600) + "h ago"
+    return "Updated " + Qt.formatDateTime(parsed, "MMM d, hh:mm")
+  }
+
+  function formatShortDay(dateStr) {
+    if (!dateStr) return ""
+    var parts = String(dateStr).split("-")
+    if (parts.length !== 3) return String(dateStr)
+    var dt = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    if (isNaN(dt.getTime())) return String(dateStr)
+    var today = new Date()
+    if (dt.getFullYear() === today.getFullYear() && dt.getMonth() === today.getMonth() && dt.getDate() === today.getDate()) {
+      return "Today"
+    }
+    var names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    return names[dt.getDay()]
+  }
+
+  Repeater {
+    id: fileWatchers
+    model: root.watchedFileIds
+
+    delegate: Item {
+      required property string modelData
+      visible: false
+      function reload() { fv.reload() }
+
+      FileView {
+        id: fv
+        path: root.usageDir + "/" + modelData + ".json"
+        watchChanges: true
+        printErrors: false
+
+        onLoaded: {
+          try {
+            var parsed = JSON.parse(text())
+            var next = Object.assign({}, root.rawPayloads)
+            next[modelData] = parsed
+            root.rawPayloads = next
+            root.lastRefreshEpochMs = Date.now()
+          } catch (err) {}
         }
 
-        var usage = stats.modelUsage || {}
-        for (var modelId in usage) {
-          var bucket = acc.modelUsage[modelId]
-          if (!bucket) bucket = acc.modelUsage[modelId] = emptyTokenBucket()
-          combineObjectNumbers(additive, bucket, usage[modelId] || {})
+        onLoadFailed: function(error) {
+          if (error === FileViewError.FileNotFound) {
+            var next = Object.assign({}, root.rawPayloads)
+            if (next[modelData] !== undefined) {
+              delete next[modelData]
+              root.rawPayloads = next
+            }
+          }
+        }
+
+        onFileChanged: reload()
+      }
+    }
+  }
+
+  Process {
+    id: scanFilesProcess
+    command: ["sh", "-c", "ls -1 \"" + root.usageDir + "\"/*.json 2>/dev/null || true"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var lines = String(text || "").split(/\r?\n/)
+        var ids = []
+        for (var i = 0; i < lines.length; i++) {
+          var line = String(lines[i] || "").trim()
+          if (!line) continue
+          var base = line.split("/").pop()
+          if (!base || base.slice(-5) !== ".json") continue
+          var id = base.slice(0, -5).toLowerCase()
+          if (id && id.charAt(0) !== "_" && ids.indexOf(id) === -1) {
+            ids.push(id)
+          }
+        }
+        root.discoveredFileIds = ids
+        root.reloadFiles()
+      }
+    }
+  }
+
+  Process {
+    id: refreshProcess
+    running: false
+    command: [root.bundledUpdateBin]
+
+    onExited: function(exitCode, exitStatus) {
+      root.refreshing = false
+      root.lastRefreshEpochMs = Date.now()
+      root.rescanFiles()
+      root.reloadFiles()
+
+      if (root.refreshQueued) {
+        var nextForce = root.refreshQueuedForce
+        root.refreshQueued = false
+        root.refreshQueuedForce = false
+        root.refreshAll(nextForce)
+      }
+    }
+  }
+
+  IpcHandler {
+    target: "nertwork.agents"
+
+    function open(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.summonBarWidget === "function" && root.shell.bar.summonBarWidget("nertwork.agents")) return
+      root.requestOpen()
+    }
+    function close(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.hideBarWidget === "function" && root.shell.bar.hideBarWidget("nertwork.agents")) return
+      root.requestClose()
+    }
+    function show(): void { open() }
+    function hide(): void { close() }
+    function toggle(): void {
+      if (root.shell && root.shell.bar && typeof root.shell.bar.isBarWidgetOpen === "function") {
+        if (root.shell.bar.isBarWidgetOpen("nertwork.agents")) {
+          if (root.shell.bar.hideBarWidget("nertwork.agents")) return
+        } else {
+          if (root.shell.bar.summonBarWidget("nertwork.agents")) return
         }
       }
+      root.requestToggle()
     }
-
-    var outProviders = {}
-    for (var id in providers) {
-      var acc = providers[id]
-      var recentDays = []
-      for (var di = 0; di < dates.length; di++) {
-        var dStr = dates[di]
-        recentDays.push({
-          date: dStr,
-          messageCount: acc.recentByDay[dStr] || 0,
-          costUsd: acc.recentCostByDay[dStr] || 0.0
-        })
-      }
-      var providerDevices = Object.keys(acc.devices).sort()
-      outProviders[id] = {
-        providerId: acc.providerId,
-        providerName: acc.providerName,
-        ready: acc.ready || providerDevices.length > 0,
-        hasLocalStats: acc.hasLocalStats,
-        hasPromptStats: acc.hasPromptStats,
-        costUsd: acc.costUsd,
-        todayCostUsd: acc.todayCostUsd,
-        todayPrompts: acc.todayPrompts,
-        todaySessions: acc.todaySessions,
-        todayTotalTokens: acc.todayTotalTokens,
-        todayTokensByModel: acc.todayTokensByModel,
-        recentDays: recentDays,
-        totalPrompts: acc.totalPrompts,
-        totalSessions: acc.totalSessions,
-        activeDays: Math.max(acc.activeDays, Object.keys(acc.activeDates).length),
-        modelUsage: acc.modelUsage,
-        deviceCount: providerDevices.length,
-        devices: providerDevices
-      }
-    }
-
-    return {
-      schemaVersion: 1,
-      updatedAt: new Date().toISOString(),
-      updatedAtMs: Date.now(),
-      deviceCount: Object.keys(devices).length,
-      devices: Object.keys(devices).sort(),
-      providers: outProviders
-    }
+    function refresh(): string { root.refreshAll(true); return "refreshing" }
+    function status(): string { return root.statusJson() }
+    function settings(): void { root.requestToggleSettings() }
+    function combined(): void { root.showCombinedView = !root.showCombinedView }
+    function select(idx: int): void { root.selectProvider(idx) }
   }
 
-  // Snapshots keep the field names older Omarchy versions wrote, so a fleet
-  // of machines on mixed versions still merges cleanly in both directions.
-  function providerSnapshot(record) {
-    return {
-      providerId: String(record.id),
-      providerName: String(record.name || record.id),
-      ready: record.ready === true,
-      hasLocalStats: record.hasLocalStats !== false,
-      hasPromptStats: record.hasPromptStats !== false,
-      scope: String(record.scope || "device"),
-      costUsd: floatValue(record.costUsd),
-      todayCostUsd: floatValue(record.todayCostUsd),
-      todayPrompts: numberValue(record.todayPrompts),
-      todaySessions: numberValue(record.todaySessions),
-      todayTotalTokens: numberValue(record.todayTotalTokens),
-      todayTokensByModel: cloneValue(record.todayTokensByModel, ({})),
-      recentDays: cloneValue(record.recentDays, []),
-      totalPrompts: numberValue(record.totalPrompts),
-      totalSessions: numberValue(record.totalSessions),
-      activeDays: numberValue(record.activeDays),
-      activeDates: cloneValue(record.activeDates, []),
-      modelUsage: cloneValue(record.modelUsage, ({}))
-    }
-  }
-
-  function localSnapshot() {
-    var providerMap = {}
-    for (var i = 0; i < agents.length; i++) {
-      var record = agents[i] ? agents[i].record : null
-      if (!record || !record.id) continue
-      if (!providerEnabled(String(record.id))) continue
-      providerMap[String(record.id)] = providerSnapshot(record)
-    }
-    return {
-      schemaVersion: 1,
-      deviceId: syncEffectiveDeviceId,
-      updatedAt: new Date().toISOString(),
-      providers: providerMap
-    }
-  }
-
-  function syncedStatsFor(providerId) {
-    var rev = syncRevision
-    if (!syncConfigured() || !aggregateData || !aggregateData.providers) return null
-    return aggregateData.providers[providerId] || null
-  }
-
-  // ---------------------------------------------------------------- format
-
-  function formatTokenCount(n) {
-    if (n === undefined || n === null) return "0"
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B"
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
-    return String(n)
-  }
-
-  function modelWordCase(word) {
-    if (word === "gpt") return "GPT"
-    if (word === "deepseek") return "DeepSeek"
-    return word.charAt(0).toUpperCase() + word.slice(1)
-  }
-
-  // Model ids arrive hyphenated with the version split across segments
-  // (`claude-opus-4-8`, `gpt-5.6-sol`). Rejoin the numeric run into one
-  // version and title-case the words around it.
-  function friendlyModelName(id) {
-    if (!id) return "Unknown"
-    var name = String(id).replace(/^claude-/, "").replace(/-\d{8}$/, "")
-    var parts = name.split("-")
-    var words = []
-    var version = []
-    for (var i = 0; i < parts.length; i++) {
-      var part = parts[i]
-      if (part === "") continue
-      if (/^\d/.test(part)) {
-        version.push(part)
-        continue
-      }
-      if (version.length > 0) {
-        words.push(version.join("."))
-        version = []
-      }
-      words.push(modelWordCase(part))
-    }
-    if (version.length > 0) words.push(version.join("."))
-    return words.length > 0 ? words.join(" ") : "Unknown"
+  Timer {
+    interval: root.pollIntervalSeconds * 1000
+    running: true
+    repeat: true
+    onTriggered: root.refreshAll(false)
   }
 }

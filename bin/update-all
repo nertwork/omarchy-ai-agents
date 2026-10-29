@@ -1,14 +1,11 @@
-#!/bin/bash
-# Self-contained Agent Usage Update runner for Omarchy Agents plugin.
+#!/usr/bin/env bash
+# Collects usage metrics across all enabled AI Agents profiles in a single pass.
+# collector.py handles modular AGY, Claude (personal + claude-work), Codex, Grok, Fireworks, and Copilot.
 set -euo pipefail
 
+export PYTHONDONTWRITEBYTECODE=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Run upstream collector if available (handles Claude Code, Fireworks, etc.)
-# We pass --except codex because upstream omarchy-agent-usage-codex has an I/O buffering deadlock.
-if command -v omarchy-agent-usage-update >/dev/null 2>&1; then
-  omarchy-agent-usage-update --except codex "$@" 2>/dev/null || true
+if [[ -x "$SCRIPT_DIR/collector.py" ]]; then
+  python3 -B "$SCRIPT_DIR/collector.py" "$@" || true
 fi
-
-# Run our bundled robust collector for Codex, AGY, Grok, and Copilot
-python3 "$SCRIPT_DIR/collector.py" "$@"

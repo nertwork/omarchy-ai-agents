@@ -2,101 +2,294 @@
   "schemaVersion": 1,
   "id": "nertwork.agents",
   "name": "AI Agents",
-  "version": "1.0.0",
+  "version": "2.3.0",
+  "description": "Modular AI coding agent usage, cost, and quota monitor for Omarchy (Antigravity, Claude Code, Codex, Copilot, Grok, Fireworks, and more) with localhost-only telemetry and aggregated views.",
   "author": "nertwork",
   "license": "MIT",
-  "description": "Antigravity (AGY), Claude Code, OpenAI Codex, GitHub Copilot, and Grok CLI usage, limits, and analytics in a native Omarchy bar panel.",
+  "homepage": "https://github.com/nertwork/omarchy-ai-agents",
+  "repository": "https://github.com/nertwork/omarchy-ai-agents",
+  "clonedFrom": "omarchy.agents",
+  "icon": "\udb85\udea3",
   "kinds": [
+    "service",
     "bar-widget"
   ],
-  "activation": "on-demand",
+  "minOmarchyVersion": "4.0.0",
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "service": "Main.qml",
+    "main": "Main.qml",
+    "barWidget": "Panel.qml",
+    "settings": "Settings.qml",
+    "panel": "Panel.qml"
+  },
+  "dependencies": {
+    "plugins": [],
+    "commands": [
+      "python3"
+    ]
+  },
+  "defaultSettings": {
+    "localhostOnly": false,
+    "aggregateByDefault": true,
+    "showAggregatedSummary": true,
+    "barDisplayMode": "aggregated",
+    "showBarCost": true,
+    "barCostWindow": "today",
+    "pollIntervalSeconds": 300,
+    "terminalCommand": "",
+    "providers": {
+      "agy-personal": {
+        "enabled": true,
+        "profile": "personal",
+        "label": "AGY Personal"
+      },
+      "agy": {
+        "enabled": true,
+        "profile": "default",
+        "label": "AGY Corp"
+      },
+      "agy-sandbox": {
+        "enabled": true,
+        "profile": "sandbox",
+        "label": "AGY Sandbox"
+      },
+      "claude-work": {
+        "enabled": false,
+        "profile": "work",
+        "label": "Claude Work"
+      },
+      "claude": {
+        "enabled": true,
+        "profile": "personal",
+        "label": "Claude"
+      },
+      "codex": {
+        "enabled": false,
+        "label": "Codex"
+      },
+      "copilot": {
+        "enabled": false,
+        "label": "Copilot"
+      },
+      "cursor": {
+        "enabled": false,
+        "label": "Cursor"
+      },
+      "gemini": {
+        "enabled": false,
+        "label": "Gemini"
+      },
+      "opencode": {
+        "enabled": false,
+        "label": "OpenCode"
+      },
+      "openrouter": {
+        "enabled": false,
+        "label": "OpenRouter"
+      },
+      "zaicodingplan": {
+        "enabled": false,
+        "label": "Z.ai"
+      },
+      "grok": {
+        "enabled": false,
+        "label": "Grok"
+      },
+      "fireworks": {
+        "enabled": false,
+        "label": "Fireworks"
+      },
+      "agy-org": {
+        "enabled": true,
+        "profile": "org",
+        "label": "AGY Org"
+      }
+    },
+    "enabledAgents": [
+      "agy-personal",
+      "agy-org",
+      "agy",
+      "agy-sandbox",
+      "claude",
+      "claude-work"
+    ],
+    "dailyQuotaUsd": 50
   },
   "barWidget": {
+    "defaults": {
+      "localhostOnly": false,
+      "aggregateByDefault": true,
+      "showAggregatedSummary": true,
+      "barDisplayMode": "aggregated",
+      "showBarCost": true,
+      "barCostWindow": "today",
+      "pollIntervalSeconds": 300,
+      "terminalCommand": "",
+      "enabledAgents": [
+        "agy-personal",
+        "agy-org",
+        "agy",
+        "agy-sandbox",
+        "claude",
+        "claude-work"
+      ],
+      "providers": {
+        "agy-personal": {
+          "enabled": true,
+          "profile": "personal",
+          "label": "AGY Personal"
+        },
+        "agy": {
+          "enabled": true,
+          "profile": "default",
+          "label": "AGY Corp"
+        },
+        "agy-sandbox": {
+          "enabled": true,
+          "profile": "sandbox",
+          "label": "AGY Sandbox"
+        },
+        "claude-work": {
+          "enabled": false,
+          "profile": "work",
+          "label": "Claude Work"
+        },
+        "claude": {
+          "enabled": true,
+          "profile": "personal",
+          "label": "Claude"
+        },
+        "codex": {
+          "enabled": false,
+          "label": "Codex"
+        },
+        "copilot": {
+          "enabled": false,
+          "label": "Copilot"
+        },
+        "cursor": {
+          "enabled": false,
+          "label": "Cursor"
+        },
+        "gemini": {
+          "enabled": false,
+          "label": "Gemini"
+        },
+        "opencode": {
+          "enabled": false,
+          "label": "OpenCode"
+        },
+        "openrouter": {
+          "enabled": false,
+          "label": "OpenRouter"
+        },
+        "zaicodingplan": {
+          "enabled": false,
+          "label": "Z.ai"
+        },
+        "grok": {
+          "enabled": false,
+          "label": "Grok"
+        },
+        "fireworks": {
+          "enabled": false,
+          "label": "Fireworks"
+        },
+        "agy-org": {
+          "enabled": true,
+          "profile": "org",
+          "label": "AGY Org"
+        }
+      },
+      "dailyQuotaUsd": 50
+    },
+    "settingsSchema": [
+      {
+        "key": "localhostOnly",
+        "label": "Localhost-only collection",
+        "type": "bool",
+        "default": false
+      },
+      {
+        "key": "aggregateByDefault",
+        "label": "Aggregate totals by default",
+        "type": "bool",
+        "default": true
+      },
+      {
+        "key": "showAggregatedSummary",
+        "label": "Show aggregated summary banner",
+        "type": "bool",
+        "default": true
+      },
+      {
+        "key": "showBarCost",
+        "label": "Show cost in status bar",
+        "type": "bool",
+        "default": true
+      },
+      {
+        "key": "barDisplayMode",
+        "label": "Bar display mode",
+        "type": "enum",
+        "default": "aggregated",
+        "options": [
+          {
+            "label": "Aggregated Total ($)",
+            "value": "aggregated"
+          },
+          {
+            "label": "Active Module ($)",
+            "value": "active"
+          },
+          {
+            "label": "Icon Only",
+            "value": "icon"
+          }
+        ]
+      },
+      {
+        "key": "pollIntervalSeconds",
+        "label": "Poll Interval (seconds)",
+        "type": "number",
+        "default": 300,
+        "min": 60,
+        "max": 3600,
+        "step": 30
+      },
+      {
+        "key": "terminalCommand",
+        "label": "Terminal Command Override",
+        "type": "string",
+        "default": "",
+        "placeholder": "e.g. ghostty -e or alacritty -e"
+      },
+      {
+        "key": "dailyQuotaUsd",
+        "label": "Daily Cost Quota ($ USD)",
+        "type": "number",
+        "default": 50,
+        "min": 0,
+        "max": 1000,
+        "step": 5
+      }
+    ],
+    "defaultSection": "right",
     "displayName": "AI Agents",
-    "description": "Rate-limit meters, token consumption, and session tracking across Antigravity, Claude Code, OpenAI Codex, GitHub Copilot, and Grok.",
+    "description": "Modular AI coding agent usage, cost, and quota monitor across Antigravity (AGY), Claude Code, OpenAI Codex, GitHub Copilot, and Grok.",
     "category": "AI",
     "aliases": [
       "agents",
       "model-usage",
       "ai"
     ],
-    "defaultSection": "right",
-    "allowMultiple": false,
-    "defaults": {
-      "providers": {
-        "agy": {
-          "enabled": true
-        },
-        "claude": {
-          "enabled": true
-        },
-        "codex": {
-          "enabled": true
-        },
-        "copilot": {
-          "enabled": true
-        },
-        "grok": {
-          "enabled": true
-        },
-        "fireworks": {
-          "enabled": false
-        }
-      },
-      "refreshIntervalSec": 900,
-      "syncMode": "Off",
-      "syncDir": "",
-      "syncFileName": "",
-      "syncDeviceId": ""
-    },
-    "schema": [
-      {
-        "key": "refreshIntervalSec",
-        "type": "integer",
-        "label": "Refresh interval (seconds)",
-        "min": 30,
-        "max": 3600,
-        "step": 30,
-        "defaultValue": 900
-      },
-      {
-        "key": "syncMode",
-        "type": "enum",
-        "label": "Synced aggregation",
-        "options": [
-          "Off",
-          "On"
-        ],
-        "defaultValue": "Off",
-        "description": "When On, write this machine's local usage snapshot and merge snapshots from other machines."
-      },
-      {
-        "key": "syncDir",
-        "type": "path",
-        "label": "Sync folder",
-        "defaultValue": "",
-        "description": "A folder synced by Syncthing, Dropbox, rsync, etc."
-      },
-      {
-        "key": "syncFileName",
-        "type": "string",
-        "label": "Snapshot file name",
-        "defaultValue": "",
-        "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."
-      },
-      {
-        "key": "syncDeviceId",
-        "type": "string",
-        "label": "Device id",
-        "defaultValue": "",
-        "description": "Optional stable device name used inside synced aggregate snapshots."
-      }
-    ]
+    "allowMultiple": false
   },
+  "activation": "on-demand",
   "omarchy": {
     "clonedFrom": "omarchy.agents"
   },
-  "repository": "https://github.com/nertwork/omarchy-ai-agents"
+  "barCostWindow": "today",
+  "showBarCost": true,
+  "dailyQuotaUsd": 50
 }
