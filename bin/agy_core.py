@@ -277,6 +277,10 @@ ENTERPRISE_WORKSPACES = {
 }
 
 ORG_WORKSPACES = {
+    "census-ai-ops",
+    "census",
+    "csvd",
+    "iebcloud",
     "org-ai-ops",
     "org",
     "org-cloud",
@@ -294,7 +298,7 @@ def _is_org_workspace(ws: str | None) -> bool:
     if w in ORG_WORKSPACES or w in custom_org:
         return True
     wl = w.lower()
-    pats = tuple(cfg.get("orgPatterns") or ()) + ("org", "org-cloud", "team-cloud")
+    pats = tuple(cfg.get("orgPatterns") or ()) + ("census-ai-ops", "census", "csvd", "iebcloud", "org", "org-cloud", "team-cloud")
     return any(str(k).lower() in wl for k in pats)
 
 
