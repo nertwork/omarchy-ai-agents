@@ -1,5 +1,7 @@
 # AI Agents for Omarchy (`nertwork.agents`)
 
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/nertwork/omarchy-ai-agents?utm_source=oss&utm_medium=github&utm_campaign=nertwork%2Fomarchy-ai-agents&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+
 A comprehensive, native Omarchy status bar panel and widget for tracking AI coding assistants, token consumption, rate limits, and API/subscription spend on `localhost`.
 
 <p align="center">
