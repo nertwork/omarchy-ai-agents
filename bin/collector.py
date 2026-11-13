@@ -306,7 +306,6 @@ def collect_agy_and_claude(
     if want_agy or want_agy_sandbox:
         if agy_split:
             if want_agy:
-                remove_state_file("agy-census")
                 for pid in ("agy", "agy-personal", "agy-org"):
                     if pid in allowed_agy_profiles:
                         rec_p = _enrich_record_with_summary(agy_profiles[pid], agy_sum, grand_summary)
